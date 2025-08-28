@@ -4,19 +4,20 @@ const nostr_crypto = @import("nostr_crypto.zig");
 
 pub const InteractiveClient = struct {
     allocator: std.mem.Allocator,
-    client: NostrWsClient,
+    relays: std.ArrayList(NostrWsClient),
     channel: []const u8,
     running: std.atomic.Value(bool),
     keypair: nostr_crypto.KeyPair,
     username: []const u8,
+    last_sent_ids: [2][64]u8 = undefined,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, channel: []const u8, relay_url: []const u8) Self {
+    pub fn init(allocator: std.mem.Allocator, channel: []const u8, primary_relay: []const u8) Self {
         // Ask for username
         const stdin = std.io.getStdIn().reader();
         const stdout = std.io.getStdOut().writer();
-        
+
         stdout.print("Enter your username: ", .{}) catch {};
         var username_buf: [64]u8 = undefined;
         var username: []const u8 = "anon";
@@ -26,7 +27,7 @@ pub const InteractiveClient = struct {
                 username = allocator.dupe(u8, trimmed) catch "anon";
             }
         }
-        
+
         // Generate a keypair for this session
         const keypair = nostr_crypto.KeyPair.generate() catch blk: {
             std.debug.print("Failed to generate keypair, using test keypair\n", .{});
@@ -40,21 +41,82 @@ pub const InteractiveClient = struct {
         };
 
         std.debug.print("Generated keypair for this session\n", .{});
-        std.debug.print("Public key: {}\n", .{std.fmt.fmtSliceHexLower(&keypair.public_key)});
+        std.debug.print("Public key: {s}\n", .{std.fmt.fmtSliceHexLower(&keypair.public_key)});
 
-        return .{
+        // Load relays from file or use defaults
+        var relays = std.ArrayList(NostrWsClient).init(allocator);
+        
+        // Try to read relays from file
+        const relay_file = std.fs.cwd().openFile("assets/default-relays.txt", .{}) catch null;
+        if (relay_file) |file| {
+            defer file.close();
+            const content = file.readToEndAlloc(allocator, 1024 * 1024) catch null;
+            if (content) |data| {
+                defer allocator.free(data);
+                var lines = std.mem.tokenizeAny(u8, data, "\n\r");
+                var count: usize = 0;
+                while (lines.next()) |line| {
+                    const trimmed = std.mem.trim(u8, line, " \t");
+                    if (trimmed.len > 0 and count < 5) { // Use first 5 relays
+                        relays.append(NostrWsClient.init(allocator, allocator.dupe(u8, trimmed) catch trimmed)) catch continue;
+                        count += 1;
+                    }
+                }
+            }
+        }
+        
+        // If no relays loaded, use defaults
+        if (relays.items.len == 0) {
+            // Always add primary relay
+            relays.append(NostrWsClient.init(allocator, primary_relay)) catch {};
+            
+            // Add some default relays
+            const default_relays = [_][]const u8{
+                "wss://nos.lol",
+                "wss://relay.nostr.band",
+                "wss://relay.damus.io",
+                "wss://nostr.wine",
+            };
+            
+            for (default_relays) |relay| {
+                if (!std.mem.eql(u8, relay, primary_relay)) {
+                    relays.append(NostrWsClient.init(allocator, relay)) catch continue;
+                }
+            }
+        }
+        
+        std.debug.print("Loaded {} relays\n", .{relays.items.len});
+        
+        var client = Self{
             .allocator = allocator,
-            .client = NostrWsClient.init(allocator, relay_url),
+            .relays = relays,
             .channel = channel,
             .running = std.atomic.Value(bool).init(true),
             .keypair = keypair,
             .username = username,
+            .last_sent_ids = undefined,
         };
+        
+        // Initialize last_sent_ids
+        @memset(&client.last_sent_ids[0], 0);
+        @memset(&client.last_sent_ids[1], 0);
+        
+        return client;
     }
 
     pub fn start(self: *Self) !void {
-        try self.client.connect();
-        try self.client.subscribeToChannel(self.channel);
+        // Connect to all relays in parallel
+        for (self.relays.items) |*relay| {
+            relay.connect() catch |err| {
+                std.debug.print("Warning: Could not connect to relay {s}: {}\n", .{ relay.url, err });
+                continue;
+            };
+            
+            // Subscribe to kind 20000 messages with #q geotag
+            relay.subscribeToChannelSmart(self.channel) catch |err| {
+                std.debug.print("Warning: Could not subscribe on relay {s}: {}\n", .{ relay.url, err });
+            };
+        }
 
         std.debug.print("\n=== Bitchat Interactive Mode ===\n", .{});
         std.debug.print("Username: {s}\n", .{self.username});
@@ -77,25 +139,32 @@ pub const InteractiveClient = struct {
 
     fn receiveLoop(self: *Self) void {
         while (self.running.load(.monotonic)) {
-            // Continuously try to receive messages with minimal delay
-            const msg = self.client.receiveMessage() catch |err| {
-                if (self.running.load(.monotonic)) {
-                    std.debug.print("\rError receiving: {}\n> ", .{err});
-                }
-                std.time.sleep(1_000_000); // 1ms on error
-                continue;
-            };
+            // Try to receive from all relays
+            for (self.relays.items) |*relay| {
+                const msg = relay.receiveMessage() catch |err| {
+                    if (self.running.load(.monotonic) and err != error.WouldBlock) {
+                        // Only log non-WouldBlock errors
+                    }
+                    continue;
+                };
 
-            const message = msg orelse {
-                // Only sleep if no message available
-                std.time.sleep(1_000_000); // 1ms when no messages
-                continue;
-            };
-            defer message.deinit();
+                const message = msg orelse continue;
+                defer message.deinit();
 
             switch (message.type) {
                 .EVENT => {
                     if (message.content) |content| {
+                        // Check if this is our own event coming back
+                        var is_our_echo = false;
+                        if (message.id) |msg_id| {
+                            for (self.last_sent_ids) |sent_id| {
+                                if (std.mem.eql(u8, msg_id, &sent_id)) {
+                                    is_our_echo = true;
+                                    break;
+                                }
+                            }
+                        }
+                        
                         // Try to extract nickname from tags
                         var nickname: ?[]const u8 = null;
                         if (message.tags) |tags| {
@@ -106,7 +175,7 @@ pub const InteractiveClient = struct {
                                 }
                             }
                         }
-                        
+
                         const display_name = if (nickname) |n| n else blk: {
                             // Fallback to first 8 chars of pubkey if no nickname
                             const author_hex = if (message.author) |author| blk2: {
@@ -121,21 +190,116 @@ pub const InteractiveClient = struct {
                             break :blk author_hex;
                         };
 
+                        if (is_our_echo) {
+                            // Our message echoed back - validation!
+                            std.debug.print("\r🔄 [{s}] Echo confirmed\n", .{relay.url});
+                        }
+                        
+                        if (message.author) |author| {
+                            const our_pubkey_hex = std.fmt.fmtSliceHexLower(&self.keypair.public_key);
+                            var our_pubkey_buf: [64]u8 = undefined;
+                            _ = std.fmt.bufPrint(&our_pubkey_buf, "{}", .{our_pubkey_hex}) catch {};
+                            
+                            if (!std.mem.eql(u8, author, &our_pubkey_buf)) {
+                                // Only show "Received from" for others' messages
+                                std.debug.print("\r[From: {s}]\n", .{author[0..8]});
+                            }
+                        }
+
                         // Clear current line, print message, restore prompt
-                        std.debug.print("\r{s: <50}\r[{s}]: {s}\n> ", .{ " ", display_name, content });
+                        const prefix = if (is_our_echo) "[You]" else display_name;
+                        std.debug.print("\r{s: <50}\r[{s}]: {s}\n> ", .{ " ", prefix, content });
                     }
                 },
                 .EOSE => {
-                    std.debug.print("\r--- End of stored events ---\n> ", .{});
+                    std.debug.print("\r--- Ready for real-time messages ---\n> ", .{});
                 },
                 .NOTICE => {
                     if (message.content) |content| {
                         std.debug.print("\rNOTICE: {s}\n> ", .{content});
                     }
                 },
+                .OK => {
+                    // Enhanced OK response tracking
+                    const symbol = if (message.ok_status orelse false) "✅" else "❌";
+                    
+                    if (message.event_id) |eid| {
+                        // Check if this is one of our recent events
+                        var is_ours = false;
+                        for (self.last_sent_ids) |sent_id| {
+                            if (std.mem.eql(u8, eid, &sent_id)) {
+                                is_ours = true;
+                                break;
+                            }
+                        }
+                        
+                        if (is_ours) {
+                            if (message.ok_status orelse false) {
+                                std.debug.print("\r{s} [{s}] Accepted our event\n> ", .{ symbol, relay.url });
+                            } else {
+                                const reason = message.content orelse "unknown reason";
+                                std.debug.print("\r{s} [{s}] Rejected: {s}\n> ", .{ symbol, relay.url, reason });
+                            }
+                        } else {
+                            // Not our event, less verbose
+                            if (!(message.ok_status orelse false)) {
+                                std.debug.print("\r{s} [{s}] Event rejected\n> ", .{ symbol, relay.url });
+                            }
+                        }
+                    } else {
+                        std.debug.print("\r[{s}] OK status: {}\n> ", .{ relay.url, message.ok_status orelse false });
+                    }
+                },
+                .AUTH => {
+                    // Handle AUTH challenge
+                    if (message.content) |challenge| {
+                        std.debug.print("\r[{s}] AUTH challenge received: {s}\n> ", .{ relay.url, challenge });
+                        self.handleAuth(relay, challenge) catch |err| {
+                            std.debug.print("\r[{s}] Failed to handle AUTH: {}\n> ", .{ relay.url, err });
+                        };
+                    }
+                },
                 else => {},
             }
+            }
+            
+            // Small sleep after checking all relays
+            std.time.sleep(1_000_000); // 1ms
         }
+    }
+
+    fn handleAuth(self: *Self, relay: *NostrWsClient, challenge: []const u8) !void {
+        // Create AUTH event according to NIP-42
+        // kind: 22242, tags: [["relay", relay_url], ["challenge", challenge]]
+        const tags = [_][]const []const u8{
+            &[_][]const u8{ "relay", relay.url },
+            &[_][]const u8{ "challenge", challenge },
+        };
+
+        // Create AUTH event (kind 22242)
+        var auth_event = try nostr_crypto.NostrEvent.create(
+            self.keypair,
+            22242, // AUTH event kind
+            &tags,
+            "",
+            self.allocator
+        );
+
+        // Convert to JSON
+        const auth_json = try auth_event.toJson(self.allocator);
+        defer self.allocator.free(auth_json);
+
+        // Send AUTH response
+        var command_buffer: [4096]u8 = undefined;
+        const command = try std.fmt.bufPrint(&command_buffer, "[\"AUTH\",{s}]", .{auth_json});
+
+        if (relay.is_tls) {
+            try relay.tls_client.?.sendText(command);
+        } else {
+            try relay.ws_client.?.sendText(command);
+        }
+        
+        std.debug.print("[{s}] AUTH response sent\n", .{relay.url});
     }
 
     fn inputLoop(self: *Self) !void {
@@ -168,39 +332,81 @@ pub const InteractiveClient = struct {
     }
 
     fn sendMessage(self: *Self, content: []const u8) !void {
-        // Just send the raw content without username prefix
-        const formatted_content = content;
-
-        // Create proper tags for geohash AND nickname
+        // Create proper tags for geohash with #q tag
         const tags = [_][]const []const u8{
-            &[_][]const u8{ "g", self.channel },
-            &[_][]const u8{ "n", self.username },  // Add nickname tag like bitchat does
+            &[_][]const u8{ "q", self.channel },
         };
 
-        // Create a proper Nostr event - use kind 20000 for ephemeral/channel messages
-        var event = try nostr_crypto.NostrEvent.create(self.keypair, 20000, // kind 20000 for ephemeral channel messages
-            &tags, formatted_content, self.allocator);
+        // Create kind 20000 event only
+        var event_kind20000 = try nostr_crypto.NostrEvent.create(self.keypair, 20000, &tags, content, self.allocator);
 
         // Convert event to JSON
-        const event_json = try event.toJson(self.allocator);
-        defer self.allocator.free(event_json);
+        const event20000_json = try event_kind20000.toJson(self.allocator);
+        defer self.allocator.free(event20000_json);
 
-        // Create the EVENT command
-        var command_buffer: [4096]u8 = undefined;
-        const command = try std.fmt.bufPrint(&command_buffer, "[\"EVENT\",{s}]", .{event_json});
+        // Create EVENT command for kind 20000
+        var command20000_buffer: [4096]u8 = undefined;
+        const command20000 = try std.fmt.bufPrint(&command20000_buffer, "[\"EVENT\",{s}]", .{event20000_json});
 
-        // Send to relay
-        if (self.client.is_tls) {
-            try self.client.tls_client.?.sendText(command);
-        } else {
-            try self.client.ws_client.?.sendText(command);
+        std.debug.print("\n[DUAL-POST] Sending to {} relays...\n", .{self.relays.items.len});
+
+        // Send both events to all relays in parallel
+        var sent_count: usize = 0;
+        for (self.relays.items) |*relay| {
+            // Skip read-only relays
+            if (!relay.can_write) {
+                std.debug.print("[{s}] Skipping (read-only relay)\n", .{relay.url});
+                continue;
+            }
+            
+            // Send kind 20000
+            if (relay.is_tls) {
+                relay.tls_client.?.sendText(command20000) catch |err| {
+                    std.debug.print("[{s}] ❌ Failed kind 20000: {}\n", .{ relay.url, err });
+                    continue;
+                };
+            } else {
+                relay.ws_client.?.sendText(command20000) catch |err| {
+                    std.debug.print("[{s}] ❌ Failed kind 20000: {}\n", .{ relay.url, err });
+                    continue;
+                };
+            }
+            
+            // Send kind 1
+            if (relay.is_tls) {
+                relay.tls_client.?.sendText(command1) catch |err| {
+                    std.debug.print("[{s}] ❌ Failed kind 1: {}\n", .{ relay.url, err });
+                    continue;
+                };
+            } else {
+                relay.ws_client.?.sendText(command1) catch |err| {
+                    std.debug.print("[{s}] ❌ Failed kind 1: {}\n", .{ relay.url, err });
+                    continue;
+                };
+            }
+            
+            std.debug.print("[{s}] ✓ Sent both kinds\n", .{relay.url});
+            sent_count += 1;
         }
-
-        std.debug.print("Debug: Sent event with id: {s}\n", .{event.id});
+        
+        std.debug.print("\n📤 Published to {}/{} relays\n", .{ sent_count, self.relays.items.len });
+        std.debug.print("Event IDs: kind20000={s}, kind1={s}\n", .{ event_kind20000.id, event_kind1.id });
+        
+        // Store our event IDs to track when they come back
+        self.last_sent_ids[0] = event_kind20000.id;
+        self.last_sent_ids[1] = event_kind1.id;
     }
 
     pub fn deinit(self: *Self) void {
         self.running.store(false, .monotonic);
-        self.client.deinit();
+        if (!std.mem.eql(u8, self.username, "anon")) {
+            self.allocator.free(self.username);
+        }
+        
+        // Clean up all relay clients
+        for (self.relays.items) |*relay| {
+            relay.deinit();
+        }
+        self.relays.deinit();
     }
 };

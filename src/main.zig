@@ -198,7 +198,7 @@ fn cmdChannelReal(allocator: std.mem.Allocator, channel: []const u8, relay_url: 
         try client.subscribeToChannel(channel);
     }
 
-    std.debug.print("Listening for messages... (Ctrl-C to quit)\n", .{});
+    std.debug.print("Listening for REAL-TIME messages only... (Ctrl-C to quit)\n", .{});
     std.debug.print("{s}\n\n", .{"-" ** 50});
 
     // Message receive loop
@@ -232,7 +232,7 @@ fn cmdChannelReal(allocator: std.mem.Allocator, channel: []const u8, relay_url: 
                 }
             },
             .EOSE => {
-                std.debug.print("--- End of stored events ---\n", .{});
+                std.debug.print("--- Ready for real-time messages ---\n", .{});
             },
             .NOTICE => {
                 if (message.content) |content| {
@@ -269,10 +269,10 @@ fn cmdChannelSimulated(allocator: std.mem.Allocator, channel: []const u8, relay_
 
 fn cmdInteractive(allocator: std.mem.Allocator, channel: []const u8, relay_url: []const u8) !void {
     const InteractiveClient = @import("interactive_client.zig").InteractiveClient;
-    
+
     var client = InteractiveClient.init(allocator, channel, relay_url);
     defer client.deinit();
-    
+
     try client.start();
 }
 

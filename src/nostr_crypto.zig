@@ -138,7 +138,8 @@ pub const NostrEvent = struct {
         content: []const u8,
         allocator: std.mem.Allocator
     ) !NostrEvent {
-        const created_at = std.time.timestamp();
+        // Always use floor(now_utc) - timestamp in seconds
+        const created_at = @divFloor(std.time.milliTimestamp(), 1000);
         
         // Convert pubkey to hex
         var pubkey_hex: [64]u8 = undefined;

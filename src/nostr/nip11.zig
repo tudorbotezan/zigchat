@@ -1,4 +1,5 @@
 const std = @import("std");
+const http_client = @import("../http_client.zig");
 
 pub const RelayInfo = struct {
     name: ?[]const u8 = null,
@@ -8,6 +9,9 @@ pub const RelayInfo = struct {
     supported_nips: ?[]u32 = null,
     software: ?[]const u8 = null,
     version: ?[]const u8 = null,
+    auth_required: bool = false,
+    payment_required: bool = false,
+    restricted_writes: bool = false,
     limitation: ?Limitation = null,
 
     pub const Limitation = struct {
@@ -19,15 +23,31 @@ pub const RelayInfo = struct {
         max_event_tags: ?u32 = null,
         max_content_length: ?u32 = null,
         min_pow_difficulty: ?u32 = null,
-        auth_required: ?bool = null,
-        payment_required: ?bool = null,
-        restricted_writes: ?bool = null,
     };
 };
 
 pub fn fetchRelayInfo(allocator: std.mem.Allocator, relay_url: []const u8) !RelayInfo {
-    _ = allocator;
-    _ = relay_url;
-    std.debug.print("TODO: Fetch NIP-11 relay information document\n", .{});
-    return RelayInfo{};
+    // Try to fetch NIP-11 info via HTTP
+    const json = http_client.fetchRelayInfo(allocator, relay_url) catch |err| {
+        std.debug.print("[{s}] Failed to fetch NIP-11 info: {}\n", .{ relay_url, err });
+        // Return default info if fetch fails
+        return RelayInfo{};
+    };
+    defer allocator.free(json);
+    
+    const info = try http_client.parseRelayInfo(allocator, json);
+    
+    std.debug.print("[{s}] NIP-11: auth_required={}, restricted_writes={}\n", .{ 
+        relay_url, 
+        info.auth_required, 
+        info.restricted_writes 
+    });
+    
+    return RelayInfo{
+        .name = info.name,
+        .description = info.description,
+        .auth_required = info.auth_required,
+        .payment_required = info.payment_required,
+        .restricted_writes = info.restricted_writes,
+    };
 }

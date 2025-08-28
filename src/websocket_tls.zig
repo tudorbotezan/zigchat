@@ -89,11 +89,21 @@ pub const TlsWebSocketClient = struct {
 
         // Connect TCP
         self.tcp_stream = try net.tcpConnectToHost(self.allocator, host, port);
-        errdefer if (self.tcp_stream) |tcp| tcp.close();
+        errdefer {
+            if (self.tcp_stream) |tcp| {
+                tcp.close();
+                self.tcp_stream = null;
+            }
+        }
 
         // Create TLS client
         self.tls_client = try self.allocator.create(tls.Client);
-        errdefer self.allocator.destroy(self.tls_client.?);
+        errdefer {
+            if (self.tls_client) |client| {
+                self.allocator.destroy(client);
+                self.tls_client = null;
+            }
+        }
 
         // Initialize TLS client with proper options
         const tls_options = tls.Client.Options{

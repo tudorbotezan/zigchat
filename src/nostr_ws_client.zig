@@ -1,6 +1,7 @@
 const std = @import("std");
 const WebSocketClient = @import("websocket_client.zig").WebSocketClient;
 const TlsWebSocketClient = @import("websocket_tls.zig").TlsWebSocketClient;
+const nip11 = @import("nostr/nip11.zig");
 
 pub const NostrWsClient = struct {
     allocator: std.mem.Allocator,
@@ -9,6 +10,8 @@ pub const NostrWsClient = struct {
     subscription_id: []const u8 = "1",
     is_tls: bool,
     url: []const u8,
+    relay_info: ?nip11.RelayInfo = null,
+    can_write: bool = true,
 
     const Self = @This();
 
@@ -23,6 +26,21 @@ pub const NostrWsClient = struct {
     }
 
     pub fn connect(self: *Self) !void {
+        // First, fetch NIP-11 relay info
+        self.relay_info = nip11.fetchRelayInfo(self.allocator, self.url) catch null;
+        
+        // Check if relay allows writes
+        if (self.relay_info) |info| {
+            if (info.restricted_writes) {
+                self.can_write = false;
+                std.debug.print("[{s}] WARNING: Relay has restricted writes\n", .{self.url});
+            }
+            if (info.auth_required) {
+                std.debug.print("[{s}] Note: Relay requires authentication (NIP-42)\n", .{self.url});
+            }
+        }
+        
+        // Connect WebSocket
         if (self.is_tls) {
             self.tls_client = TlsWebSocketClient.init(self.allocator, self.url);
             try self.tls_client.?.connect();
@@ -30,33 +48,49 @@ pub const NostrWsClient = struct {
             self.ws_client = WebSocketClient.init(self.allocator, self.url);
             try self.ws_client.?.connect();
         }
-        std.debug.print("Connected to Nostr relay\n", .{});
+        std.debug.print("[{s}] Connected (can_write={})\n", .{ self.url, self.can_write });
     }
 
     pub fn subscribeToChannel(self: *Self, channel: []const u8) !void {
-        // Create REQ message for channel subscription
-        // For geohash channels, subscribe to both kind 1 and 20000 with #g tag
-        // Subscribe to more event kinds and remove limit to see all messages
-        // BitChat might use kind 42 for channel messages or other kinds
+        // REAL-TIME MODE ONLY - Subscribe from NOW to get only new incoming messages
+        const now = std.time.timestamp();
+
         var req_buffer: [512]u8 = undefined;
         const req = try std.fmt.bufPrint(&req_buffer,
-            \\["REQ","{s}",{{"kinds":[1,42,20000,20001],"#g":["{s}"]}}]
-        , .{ self.subscription_id, channel });
+            \\["REQ","{s}",{{"#g":["{s}"],"since":{d}}}]
+        , .{ self.subscription_id, channel, now });
 
         if (self.is_tls) {
             try self.tls_client.?.sendText(req);
         } else {
             try self.ws_client.?.sendText(req);
         }
-        std.debug.print("Subscribed to geohash: {s}\n", .{channel});
+        std.debug.print("Subscribed to REAL-TIME messages for geohash: {s}\n", .{channel});
+    }
+
+    pub fn subscribeToChannelSmart(self: *Self, channel: []const u8) !void {
+        // Smart subscription: only kind 20000 with #q geotag, limit for initial history
+        var req_buffer: [512]u8 = undefined;
+        const req = try std.fmt.bufPrint(&req_buffer,
+            \\["REQ","geo",{{"kinds":[20000],"#q":["{s}"],"limit":50}}]
+        , .{ channel });
+
+        if (self.is_tls) {
+            try self.tls_client.?.sendText(req);
+        } else {
+            try self.ws_client.?.sendText(req);
+        }
+        std.debug.print("[{s}] Subscribed to kind 20000 with #q geotag: {s}\n", .{ self.url, channel });
     }
 
     pub fn subscribeToGlobal(self: *Self) !void {
-        // Subscribe to all kind 1 (text notes) messages
+        // REAL-TIME MODE - Subscribe from NOW
+        const now = std.time.timestamp();
+
         var req_buffer: [256]u8 = undefined;
         const req = try std.fmt.bufPrint(&req_buffer,
-            \\["REQ","{s}",{{"kinds":[1],"limit":50}}]
-        , .{self.subscription_id});
+            \\["REQ","{s}",{{"kinds":[1],"since":{d}}}]
+        , .{ self.subscription_id, now });
 
         if (self.is_tls) {
             try self.tls_client.?.sendText(req);
@@ -76,8 +110,8 @@ pub const NostrWsClient = struct {
         };
         defer self.allocator.free(raw_msg);
 
-        // Comment out debug logging for production
-        // std.debug.print("\n[RAW MESSAGE]: {s}\n", .{raw_msg});
+        // Log full raw response for debugging
+        std.debug.print("\n[FULL RAW RESPONSE]: {s}\n", .{raw_msg});
 
         return parseNostrMessage(self.allocator, raw_msg) catch |err| {
             std.debug.print("\n[PARSE ERROR]: Failed to parse: {}\n", .{err});
@@ -106,13 +140,16 @@ pub const NostrMessage = struct {
     author: ?[]const u8 = null,
     created_at: ?i64 = null,
     id: ?[]const u8 = null,
-    tags: ?[][]const u8 = null,  // Add tags field to store parsed tags
+    event_id: ?[]const u8 = null, // For OK messages
+    ok_status: ?bool = null, // For OK messages: true/false
+    tags: ?[][]const u8 = null, // Add tags field to store parsed tags
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *const NostrMessage) void {
         if (self.content) |content| self.allocator.free(content);
         if (self.author) |author| self.allocator.free(author);
         if (self.id) |id| self.allocator.free(id);
+        if (self.event_id) |event_id| self.allocator.free(event_id);
         if (self.tags) |tags| {
             for (tags) |tag| {
                 self.allocator.free(tag);
@@ -137,6 +174,8 @@ fn parseNostrMessage(allocator: std.mem.Allocator, json_str: []const u8) !NostrM
     var content: ?[]const u8 = null;
     var author: ?[]const u8 = null;
     var created_at: ?i64 = null;
+    var event_id: ?[]const u8 = null;
+    var ok_status: ?bool = null;
     var tags: ?[][]const u8 = null;
 
     if (std.mem.startsWith(u8, json_str, "[\"EVENT\"")) {
@@ -170,18 +209,18 @@ fn parseNostrMessage(allocator: std.mem.Allocator, json_str: []const u8) !NostrM
                 if (json_str[i] == '[') bracket_count += 1;
                 if (json_str[i] == ']') bracket_count -= 1;
             }
-            
+
             // Parse nickname tag if present - handle variations with/without spaces
-            const tags_str = json_str[tags_start..i-1];
+            const tags_str = json_str[tags_start .. i - 1];
             // Try both with and without space after comma
             var n_tag_pos: ?usize = std.mem.indexOf(u8, tags_str, "[\"n\",\"");
             var prefix_len: usize = "[\"n\",\"".len;
-            
+
             if (n_tag_pos == null) {
                 n_tag_pos = std.mem.indexOf(u8, tags_str, "[\"n\", \"");
                 prefix_len = "[\"n\", \"".len;
             }
-            
+
             if (n_tag_pos) |pos| {
                 const nick_start = pos + prefix_len;
                 if (std.mem.indexOf(u8, tags_str[nick_start..], "\"")) |nick_end| {
@@ -189,13 +228,13 @@ fn parseNostrMessage(allocator: std.mem.Allocator, json_str: []const u8) !NostrM
                     if (nick_end > 0) {
                         var tag_list = try allocator.alloc([]const u8, 2);
                         tag_list[0] = try allocator.dupe(u8, "n");
-                        tag_list[1] = try unescapeJsonString(allocator, tags_str[nick_start..nick_start + nick_end]);
+                        tag_list[1] = try unescapeJsonString(allocator, tags_str[nick_start .. nick_start + nick_end]);
                         tags = tag_list;
                     }
                 }
             }
         }
-        
+
         // Extract created_at (tolerate whitespace after colon)
         if (findJsonFieldValueStart(json_str, "created_at")) |start| {
             var end = start;
@@ -215,8 +254,46 @@ fn parseNostrMessage(allocator: std.mem.Allocator, json_str: []const u8) !NostrM
         }
     } else if (std.mem.startsWith(u8, json_str, "[\"OK\"")) {
         msg_type = .OK;
+        // Parse OK message format: ["OK", "event_id", true/false, "message"]
+        // Find event ID
+        if (std.mem.indexOf(u8, json_str[6..], "\"")) |start| {
+            const id_start = 6 + start + 1;
+            if (std.mem.indexOf(u8, json_str[id_start..], "\"")) |end| {
+                event_id = try allocator.dupe(u8, json_str[id_start..id_start + end]);
+            }
+        }
+        // Find true/false status
+        if (std.mem.indexOf(u8, json_str, "true")) |_| {
+            ok_status = true;
+        } else if (std.mem.indexOf(u8, json_str, "false")) |_| {
+            ok_status = false;
+        }
+        // Find optional message
+        var comma_count: usize = 0;
+        var i: usize = 0;
+        while (i < json_str.len) : (i += 1) {
+            if (json_str[i] == ',' and comma_count < 3) {
+                comma_count += 1;
+                if (comma_count == 3) {
+                    // Look for message after third comma
+                    var j = i + 1;
+                    while (j < json_str.len and json_str[j] != '"') : (j += 1) {}
+                    if (j < json_str.len) {
+                        const msg_start = j + 1;
+                        if (std.mem.indexOf(u8, json_str[msg_start..], "\"")) |msg_end| {
+                            content = try allocator.dupe(u8, json_str[msg_start..msg_start + msg_end]);
+                        }
+                    }
+                }
+            }
+        }
     } else if (std.mem.startsWith(u8, json_str, "[\"AUTH\"")) {
         msg_type = .AUTH;
+        // Extract challenge for AUTH handling
+        if (findJsonString(json_str, "[\"AUTH\",\"")) |auth_start| {
+            const end = findStringEnd(json_str, auth_start) orelse json_str.len;
+            content = try allocator.dupe(u8, json_str[auth_start..end]);
+        }
     }
 
     return NostrMessage{
@@ -224,6 +301,8 @@ fn parseNostrMessage(allocator: std.mem.Allocator, json_str: []const u8) !NostrM
         .content = content,
         .author = author,
         .created_at = created_at,
+        .event_id = event_id,
+        .ok_status = ok_status,
         .tags = tags,
         .allocator = allocator,
     };
@@ -270,7 +349,7 @@ fn findJsonArrayStart(json: []const u8, key: []const u8) ?usize {
 fn unescapeJsonString(allocator: std.mem.Allocator, escaped: []const u8) ![]u8 {
     var result = std.ArrayList(u8).init(allocator);
     defer result.deinit();
-    
+
     var i: usize = 0;
     while (i < escaped.len) {
         if (escaped[i] == '\\' and i + 1 < escaped.len) {
@@ -283,25 +362,25 @@ fn unescapeJsonString(allocator: std.mem.Allocator, escaped: []const u8) ![]u8 {
                 'u' => {
                     // Handle Unicode escape sequences like \u0041 or \uD83D\uDE00 (emoji)
                     if (i + 5 < escaped.len) {
-                        const hex_str = escaped[i + 2..i + 6];
+                        const hex_str = escaped[i + 2 .. i + 6];
                         const codepoint = std.fmt.parseInt(u16, hex_str, 16) catch {
                             // If parsing fails, just append the literal characters
                             try result.append(escaped[i]);
                             i += 1;
                             continue;
                         };
-                        
+
                         // Check for surrogate pair (for emojis and other chars > U+FFFF)
                         if (codepoint >= 0xD800 and codepoint <= 0xDBFF and i + 11 < escaped.len) {
                             if (escaped[i + 6] == '\\' and escaped[i + 7] == 'u') {
-                                const low_hex = escaped[i + 8..i + 12];
+                                const low_hex = escaped[i + 8 .. i + 12];
                                 const low = std.fmt.parseInt(u16, low_hex, 16) catch {
                                     // Not a valid surrogate pair, encode the high surrogate alone
                                     try encodeUtf8(&result, codepoint);
                                     i += 6;
                                     continue;
                                 };
-                                
+
                                 // Decode surrogate pair to full codepoint
                                 const high = codepoint;
                                 const full_codepoint = @as(u21, (high - 0xD800)) * 0x400 + (low - 0xDC00) + 0x10000;
@@ -310,7 +389,7 @@ fn unescapeJsonString(allocator: std.mem.Allocator, escaped: []const u8) ![]u8 {
                                 continue;
                             }
                         }
-                        
+
                         try encodeUtf8(&result, codepoint);
                         i += 6;
                     } else {
@@ -332,7 +411,7 @@ fn unescapeJsonString(allocator: std.mem.Allocator, escaped: []const u8) ![]u8 {
             i += 1;
         }
     }
-    
+
     return result.toOwnedSlice();
 }
 
