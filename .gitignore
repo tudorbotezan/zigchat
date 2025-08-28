@@ -1,0 +1,31 @@
+# Zig build artifacts
+zig-cache/
+zig-out/
+
+# Local build executable
+build
+
+# Compiled object files, libraries and executables
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# IDE-specific files
+*.pdb
+*.suo
+*.user
+*.vs/
+.vscode/
+.idea/
+
+# OS-specific files
+.DS_Store
+
+# Temporary files
+*.swp
+*~
+*.bak
+*.tmp
