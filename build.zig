@@ -4,12 +4,19 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Add ws module from lib/ws
+    const ws_module = b.addModule("ws", .{
+        .root_source_file = b.path("lib/ws/src/main.zig"),
+    });
+
     const exe = b.addExecutable(.{
         .name = "bitchat",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
+
+    exe.root_module.addImport("ws", ws_module);
 
     b.installArtifact(exe);
 

@@ -1,34 +1,58 @@
 const std = @import("std");
+const websocket = @import("websocket");
 
-pub const WebSocketClient = struct {
+pub const NostrClient = struct {
     allocator: std.mem.Allocator,
     url: []const u8,
+    client: ?*websocket.Client = null,
     connected: bool = false,
 
-    pub fn init(allocator: std.mem.Allocator, url: []const u8) WebSocketClient {
+    pub fn init(allocator: std.mem.Allocator, url: []const u8) NostrClient {
         return .{
             .allocator = allocator,
             .url = url,
         };
     }
 
-    pub fn connect(self: *WebSocketClient) !void {
-        _ = self;
-        std.debug.print("TODO: WebSocket connect implementation\n", .{});
+    pub fn connect(self: *NostrClient) !void {
+        self.client = try websocket.connect(self.allocator, self.url, &.{});
+        self.connected = true;
+        std.debug.print("Connected to: {s}\n", .{self.url});
     }
 
-    pub fn disconnect(self: *WebSocketClient) void {
+    pub fn disconnect(self: *NostrClient) void {
+        if (self.client) |client| {
+            client.close();
+            self.client = null;
+        }
         self.connected = false;
     }
 
-    pub fn send(self: *WebSocketClient, data: []const u8) !void {
-        _ = self;
-        _ = data;
-        std.debug.print("TODO: WebSocket send implementation\n", .{});
+    pub fn send(self: *NostrClient, data: []const u8) !void {
+        if (!self.connected or self.client == null) return error.NotConnected;
+        try self.client.?.write(data);
+        std.debug.print("Sent: {s}\n", .{data});
     }
 
-    pub fn receive(self: *WebSocketClient) ![]u8 {
-        _ = self;
-        return error.NotImplemented;
+    pub fn receive(self: *NostrClient) ![]u8 {
+        if (!self.connected or self.client == null) return error.NotConnected;
+
+        const msg = try self.client.?.read();
+        defer msg.deinit();
+
+        return try self.allocator.dupe(u8, msg.data);
+    }
+
+    pub fn receiveTimeout(self: *NostrClient, timeout_ms: u32) !?[]u8 {
+        if (!self.connected or self.client == null) return error.NotConnected;
+
+        const msg = try self.client.?.readTimeout(timeout_ms) orelse return null;
+        defer msg.deinit();
+
+        return try self.allocator.dupe(u8, msg.data);
+    }
+
+    pub fn deinit(self: *NostrClient) void {
+        self.disconnect();
     }
 };

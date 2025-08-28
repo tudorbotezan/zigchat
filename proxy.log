@@ -1,0 +1,28 @@
+/Users/tb/repos/Zig/zig_chat/ws_proxy.py:64: DeprecationWarning: websockets.server.serve is deprecated
+  server_instance = await websockets.server.serve(handle_client, "localhost", port)
+Starting WebSocket proxy on ws://localhost:8081
+This will forward to: wss://relay.damus.io
+Press Ctrl-C to stop
+
+Traceback (most recent call last):
+  File "/Users/tb/repos/Zig/zig_chat/ws_proxy.py", line 69, in <module>
+    asyncio.run(main())
+    ~~~~~~~~~~~^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.7/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/runners.py", line 195, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.7/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.7/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/tb/repos/Zig/zig_chat/ws_proxy.py", line 64, in main
+    server_instance = await websockets.server.serve(handle_client, "localhost", port)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/lib/python3.13/site-packages/websockets/legacy/server.py", line 1123, in __await_impl__
+    server = await self._create_server()
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.7/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 1630, in create_server
+    raise OSError(err.errno, msg) from None
+OSError: [Errno 48] error while attempting to bind on address ('127.0.0.1', 8081): [errno 48] address already in use

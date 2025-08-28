@@ -1,0 +1,57 @@
+Test Nostr relay running on ws://localhost:8080
+Waiting for connections...
+
+Press Ctrl-C to stop the relay
+Client connected
+Received: ["REQ","1",{"kinds":[1],"#t":["9q"],"limit":100}]
+Subscription 1 with filters: { kinds: [ 1 ], '#t': [ '9q' ], limit: 100 }
+Sending event: Welcome to the #9q channel! This is a test message.
+Sending event: Hey everyone! Testing the WebSocket connection.
+Sending event: Nostr protocol working great! Decentralized social media FTW!
+Sent EOSE
+Sending live event: Live message at 5:58:05 PM
+Sending live event: Live message at 5:58:10 PM
+Sending live event: Live message at 5:58:15 PM
+Sending live event: Live message at 5:58:20 PM
+Sending live event: Live message at 5:58:25 PM
+Sending live event: Live message at 5:58:30 PM
+Sending live event: Live message at 5:58:35 PM
+Sending live event: Live message at 5:58:40 PM
+Sending live event: Live message at 5:58:45 PM
+Sending live event: Live message at 5:58:50 PM
+Sending live event: Live message at 5:58:55 PM
+Sending live event: Live message at 5:59:00 PM
+Sending live event: Live message at 5:59:05 PM
+Sending live event: Live message at 5:59:10 PM
+Client connected
+Received: ["REQ","1",{"kinds":[1],"#t":["9q"],"limit":100}]
+Subscription 1 with filters: { kinds: [ 1 ], '#t': [ '9q' ], limit: 100 }
+Sending event: Welcome to the #9q channel! This is a test message.
+Sending event: Hey everyone! Testing the WebSocket connection.
+Sending event: Nostr protocol working great! Decentralized social media FTW!
+Sent EOSE
+Client disconnected
+Sending live event: Live message at 5:59:15 PM
+Client connected
+Received: ["REQ","1",{"kinds":[1],"#t":["9q"],"limit":100}]
+Subscription 1 with filters: { kinds: [ 1 ], '#t': [ '9q' ], limit: 100 }
+Sending event: Welcome to the #9q channel! This is a test message.
+Sending event: Hey everyone! Testing the WebSocket connection.
+Sending event: Nostr protocol working great! Decentralized social media FTW!
+Sent EOSE
+Sending live event: Live message at 5:59:20 PM
+Client disconnected
+Sending live event: Live message at 5:59:25 PM
+Sending live event: Live message at 5:59:30 PM
+Sending live event: Live message at 5:59:35 PM
+Client connected
+Received: ["REQ","1",{"kinds":[1],"#t":["9q"],"limit":100}]
+Subscription 1 with filters: { kinds: [ 1 ], '#t': [ '9q' ], limit: 100 }
+Sending event: Welcome to the #9q channel! This is a test message.
+Sending event: Hey everyone! Testing the WebSocket connection.
+Sending event: Nostr protocol working great! Decentralized social media FTW!
+Sent EOSE
+Sending live event: Live message at 5:59:40 PM
+Sending live event: Live message at 5:59:40 PM
+Client disconnected
+Sending live event: Live message at 5:59:45 PM

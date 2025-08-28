@@ -59,6 +59,13 @@ pub fn main() !void {
         } else {
             std.debug.print("Usage: bitchat auth test\n", .{});
         }
+    } else if (std.mem.eql(u8, command, "channel")) {
+        const channel = if (args.len > 2) args[2] else "9q";
+        const relay = if (args.len > 3) args[3] else "wss://relay.damus.io";
+        try cmdChannel(allocator, channel, relay);
+    } else if (std.mem.eql(u8, command, "ws-test")) {
+        const url = if (args.len > 2) args[2] else "ws://localhost:8080";
+        try cmdWsTest(allocator, url);
     } else {
         std.debug.print("Unknown command: {s}\n", .{command});
         try printUsage();
@@ -79,6 +86,8 @@ fn printUsage() !void {
         \\  bitchat pub <message>           Publish note
         \\  bitchat sub [options]           Subscribe to notes
         \\  bitchat auth test               Test AUTH flow
+        \\  bitchat channel [name] [relay]  Join a channel (default: #9q)
+        \\  bitchat ws-test [url]           Test WebSocket connection
         \\
     , .{});
 }
@@ -141,4 +150,119 @@ fn cmdAuthTest(allocator: std.mem.Allocator) !void {
     _ = allocator;
     std.debug.print("Testing AUTH flow...\n", .{});
     std.debug.print("TODO: Test NIP-42 auth\n", .{});
+}
+
+fn cmdChannel(allocator: std.mem.Allocator, channel: []const u8, relay_url: []const u8) !void {
+    // Try real WebSocket first, fall back to simulation if it fails
+    if (std.mem.startsWith(u8, relay_url, "ws://")) {
+        // Use real WebSocket for non-TLS connections
+        cmdChannelReal(allocator, channel, relay_url) catch |err| {
+            std.debug.print("WebSocket connection failed: {}\n", .{err});
+            std.debug.print("Falling back to simulation...\n\n", .{});
+            try cmdChannelSimulated(allocator, channel, relay_url);
+        };
+    } else {
+        // For now, wss:// falls back to simulation
+        std.debug.print("TLS support (wss://) coming soon. Using simulation...\n\n", .{});
+        try cmdChannelSimulated(allocator, channel, relay_url);
+    }
+}
+
+fn cmdChannelReal(allocator: std.mem.Allocator, channel: []const u8, relay_url: []const u8) !void {
+    const NostrWsClient = @import("nostr_ws_client.zig").NostrWsClient;
+
+    std.debug.print("\n=== Bitchat TUI - Channel #{s} ===\n", .{channel});
+    std.debug.print("{s}\n", .{"=" ** 50});
+    std.debug.print("Relay: {s}\n", .{relay_url});
+    std.debug.print("{s}\n\n", .{"=" ** 50});
+
+    var client = NostrWsClient.init(allocator, relay_url);
+    defer client.deinit();
+
+    try client.connect();
+    try client.subscribeToChannel(channel);
+
+    std.debug.print("Listening for messages... (Ctrl-C to quit)\n", .{});
+    std.debug.print("{s}\n\n", .{"-" ** 50});
+
+    // Message receive loop
+    while (true) {
+        const msg = try client.receiveMessage() orelse continue;
+        defer msg.deinit();
+
+        switch (msg.type) {
+            .EVENT => {
+                if (msg.content) |content| {
+                    // Format: [timestamp] author: content
+                    const timestamp = msg.created_at orelse std.time.timestamp();
+                    const author_short = if (msg.author) |author|
+                        if (author.len > 8) author[0..8] else author
+                    else
+                        "unknown";
+
+                    std.debug.print("[{d}] {s}: {s}\n", .{ timestamp, author_short, content });
+                }
+            },
+            .EOSE => {
+                std.debug.print("--- End of stored events ---\n", .{});
+            },
+            .NOTICE => {
+                if (msg.content) |content| {
+                    std.debug.print("NOTICE: {s}\n", .{content});
+                }
+            },
+            .OK => {
+                std.debug.print("OK received\n", .{});
+            },
+            else => {},
+        }
+    }
+}
+
+fn cmdChannelSimulated(allocator: std.mem.Allocator, channel: []const u8, relay_url: []const u8) !void {
+    const SimpleNostrClient = @import("simple_nostr.zig").SimpleNostrClient;
+
+    std.debug.print("\n=== Bitchat TUI - Channel #{s} (Simulated) ===\n", .{channel});
+    std.debug.print("{s}\n", .{"=" ** 50});
+    std.debug.print("Relay: {s}\n", .{relay_url});
+    std.debug.print("{s}\n\n", .{"=" ** 50});
+
+    var client = SimpleNostrClient.init(allocator, relay_url);
+    defer client.deinit();
+
+    try client.connect();
+    try client.subscribeToChannel(channel);
+
+    std.debug.print("\nSimulating message stream:\n", .{});
+    std.debug.print("{s}\n\n", .{"-" ** 50});
+
+    try client.simulateMessages(channel);
+}
+
+fn cmdWsTest(allocator: std.mem.Allocator, url: []const u8) !void {
+    const WebSocketClient = @import("websocket_client.zig").WebSocketClient;
+
+    std.debug.print("Testing WebSocket connection to: {s}\n", .{url});
+
+    var client = WebSocketClient.init(allocator, url);
+    defer client.deinit();
+
+    try client.connect();
+
+    // Send a test message
+    try client.sendText("Hello WebSocket!");
+
+    // Receive messages
+    std.debug.print("Waiting for messages...\n", .{});
+    var count: usize = 0;
+    while (count < 5) : (count += 1) {
+        if (try client.receive()) |msg| {
+            defer allocator.free(msg);
+            std.debug.print("Received: {s}\n", .{msg});
+        } else {
+            std.time.sleep(100 * std.time.ns_per_ms);
+        }
+    }
+
+    std.debug.print("Test complete!\n", .{});
 }
