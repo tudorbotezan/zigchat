@@ -73,7 +73,7 @@ pub const WebSocketClient = struct {
         };
 
         try self.ws_stream.?.sendMessage(message);
-        std.debug.print("Sent: {s}\n", .{text});
+        // Don't print sent messages - let higher level code handle that
     }
 
     pub fn receive(self: *Self) !?[]const u8 {

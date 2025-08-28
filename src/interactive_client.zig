@@ -10,10 +10,11 @@ pub const InteractiveClient = struct {
     keypair: nostr_crypto.KeyPair,
     username: []const u8,
     last_sent_ids: [2][64]u8 = undefined,
+    debug_mode: bool = false,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, channel: []const u8, primary_relay: []const u8) Self {
+    pub fn init(allocator: std.mem.Allocator, channel: []const u8, primary_relay: []const u8, debug_mode: bool) Self {
         // Ask for username
         const stdin = std.io.getStdIn().reader();
         const stdout = std.io.getStdOut().writer();
@@ -40,8 +41,11 @@ pub const InteractiveClient = struct {
             break :blk test_keypair;
         };
 
-        std.debug.print("Generated keypair for this session\n", .{});
-        std.debug.print("Public key: {s}\n", .{std.fmt.fmtSliceHexLower(&keypair.public_key)});
+        // Only show in debug mode
+        if (debug_mode) {
+            std.debug.print("Generated keypair for this session\n", .{});
+            std.debug.print("Public key: {s}\n", .{std.fmt.fmtSliceHexLower(&keypair.public_key)});
+        }
 
         // Load geohash-specific relays
         var relays = std.ArrayList(NostrWsClient).init(allocator);
@@ -73,7 +77,7 @@ pub const InteractiveClient = struct {
                                     var trimmed = std.mem.trim(u8, relay_entry, " \t\n\r");
                                     if (trimmed.len > 2 and trimmed[0] == '"' and trimmed[trimmed.len - 1] == '"') {
                                         const url = trimmed[1 .. trimmed.len - 1];
-                                        relays.append(NostrWsClient.init(allocator, allocator.dupe(u8, url) catch url)) catch continue;
+                                        relays.append(NostrWsClient.init(allocator, allocator.dupe(u8, url) catch url, debug_mode)) catch continue;
                                         loaded_from_geohash = true;
                                     }
                                 }
@@ -97,7 +101,7 @@ pub const InteractiveClient = struct {
                                         var trimmed = std.mem.trim(u8, relay_entry, " \t\n\r");
                                         if (trimmed.len > 2 and trimmed[0] == '"' and trimmed[trimmed.len - 1] == '"') {
                                             const url = trimmed[1 .. trimmed.len - 1];
-                                            relays.append(NostrWsClient.init(allocator, allocator.dupe(u8, url) catch url)) catch continue;
+                                            relays.append(NostrWsClient.init(allocator, allocator.dupe(u8, url) catch url, debug_mode)) catch continue;
                                             loaded_from_geohash = true;
                                         }
                                     }
@@ -122,7 +126,7 @@ pub const InteractiveClient = struct {
                     while (lines.next()) |line| {
                         const trimmed = std.mem.trim(u8, line, " \t");
                         if (trimmed.len > 0 and count < 5) { // Use first 5 relays
-                            relays.append(NostrWsClient.init(allocator, allocator.dupe(u8, trimmed) catch trimmed)) catch continue;
+                            relays.append(NostrWsClient.init(allocator, allocator.dupe(u8, trimmed) catch trimmed, debug_mode)) catch continue;
                             count += 1;
                         }
                     }
@@ -133,7 +137,7 @@ pub const InteractiveClient = struct {
         // If still no relays loaded, use hardcoded defaults
         if (relays.items.len == 0) {
             // Always add primary relay
-            relays.append(NostrWsClient.init(allocator, primary_relay)) catch {};
+            relays.append(NostrWsClient.init(allocator, primary_relay, debug_mode)) catch {};
             
             // Add some default relays
             const default_relays = [_][]const u8{
@@ -145,15 +149,17 @@ pub const InteractiveClient = struct {
             
             for (default_relays) |relay| {
                 if (!std.mem.eql(u8, relay, primary_relay)) {
-                    relays.append(NostrWsClient.init(allocator, relay)) catch continue;
+                    relays.append(NostrWsClient.init(allocator, relay, debug_mode)) catch continue;
                 }
             }
         }
         
-        if (loaded_from_geohash) {
-            std.debug.print("Loaded {} geohash-specific relays for '{s}'\n", .{ relays.items.len, channel });
-        } else {
-            std.debug.print("Loaded {} default relays\n", .{relays.items.len});
+        if (debug_mode) {
+            if (loaded_from_geohash) {
+                std.debug.print("Loaded {} geohash-specific relays for '{s}'\n", .{ relays.items.len, channel });
+            } else {
+                std.debug.print("Loaded {} default relays\n", .{relays.items.len});
+            }
         }
         
         var client = Self{
@@ -164,6 +170,7 @@ pub const InteractiveClient = struct {
             .keypair = keypair,
             .username = username,
             .last_sent_ids = undefined,
+            .debug_mode = debug_mode,
         };
         
         // Initialize last_sent_ids
@@ -177,13 +184,17 @@ pub const InteractiveClient = struct {
         // Connect to all relays in parallel
         for (self.relays.items) |*relay| {
             relay.connect() catch |err| {
-                std.debug.print("Warning: Could not connect to relay {s}: {}\n", .{ relay.url, err });
+                if (self.debug_mode) {
+                    std.debug.print("Warning: Could not connect to relay {s}: {}\n", .{ relay.url, err });
+                }
                 continue;
             };
             
             // Subscribe to both kind 1 and 20000 messages with #g geotag
-            relay.subscribeToChannelSmart(self.channel) catch |err| {
-                std.debug.print("Warning: Could not subscribe on relay {s}: {}\n", .{ relay.url, err });
+            relay.subscribeToChannelSmart(self.channel, self.debug_mode) catch |err| {
+                if (self.debug_mode) {
+                    std.debug.print("Warning: Could not subscribe on relay {s}: {}\n", .{ relay.url, err });
+                }
             };
         }
 
@@ -261,7 +272,9 @@ pub const InteractiveClient = struct {
 
                         if (is_our_echo) {
                             // Our message echoed back - validation!
-                            std.debug.print("\r🔄 [{s}] Echo confirmed\n", .{relay.url});
+                            if (self.debug_mode) {
+                                std.debug.print("\r🔄 [{s}] Echo confirmed\n", .{relay.url});
+                            }
                         }
                         
                         if (message.author) |author| {
@@ -271,21 +284,32 @@ pub const InteractiveClient = struct {
                             
                             if (!std.mem.eql(u8, author, &our_pubkey_buf)) {
                                 // Only show "Received from" for others' messages
-                                std.debug.print("\r[From: {s}]\n", .{author[0..8]});
+                                if (self.debug_mode) {
+                                    std.debug.print("\r[From: {s}]\n", .{author[0..8]});
+                                }
                             }
                         }
 
                         // Clear current line, print message, restore prompt
                         const prefix = if (is_our_echo) "[You]" else display_name;
-                        std.debug.print("\r{s: <50}\r[{s}]: {s}\n> ", .{ " ", prefix, content });
+                        // Show event kind only in debug mode
+                        if (self.debug_mode and message.kind != null) {
+                            std.debug.print("\r{s: <50}\r[kind:{d}][{s}]: {s}\n> ", .{ " ", message.kind.?, prefix, content });
+                        } else {
+                            std.debug.print("\r{s: <50}\r[{s}]: {s}\n> ", .{ " ", prefix, content });
+                        }
                     }
                 },
                 .EOSE => {
-                    std.debug.print("\r--- Ready for real-time messages ---\n> ", .{});
+                    if (self.debug_mode) {
+                        std.debug.print("\r--- Ready for real-time messages ---\n> ", .{});
+                    }
                 },
                 .NOTICE => {
-                    if (message.content) |content| {
-                        std.debug.print("\rNOTICE: {s}\n> ", .{content});
+                    if (self.debug_mode) {
+                        if (message.content) |content| {
+                            std.debug.print("\rNOTICE: {s}\n> ", .{content});
+                        }
                     }
                 },
                 .OK => {
@@ -302,29 +326,37 @@ pub const InteractiveClient = struct {
                             }
                         }
                         
-                        if (is_ours) {
-                            if (message.ok_status orelse false) {
-                                std.debug.print("\r{s} [{s}] Accepted our event\n> ", .{ symbol, relay.url });
+                        if (self.debug_mode) {
+                            if (is_ours) {
+                                if (message.ok_status orelse false) {
+                                    std.debug.print("\r{s} [{s}] Accepted our event\n> ", .{ symbol, relay.url });
+                                } else {
+                                    const reason = message.content orelse "unknown reason";
+                                    std.debug.print("\r{s} [{s}] Rejected: {s}\n> ", .{ symbol, relay.url, reason });
+                                }
                             } else {
-                                const reason = message.content orelse "unknown reason";
-                                std.debug.print("\r{s} [{s}] Rejected: {s}\n> ", .{ symbol, relay.url, reason });
-                            }
-                        } else {
-                            // Not our event, less verbose
-                            if (!(message.ok_status orelse false)) {
-                                std.debug.print("\r{s} [{s}] Event rejected\n> ", .{ symbol, relay.url });
+                                // Not our event, less verbose
+                                if (!(message.ok_status orelse false)) {
+                                    std.debug.print("\r{s} [{s}] Event rejected\n> ", .{ symbol, relay.url });
+                                }
                             }
                         }
                     } else {
-                        std.debug.print("\r[{s}] OK status: {}\n> ", .{ relay.url, message.ok_status orelse false });
+                        if (self.debug_mode) {
+                            std.debug.print("\r[{s}] OK status: {}\n> ", .{ relay.url, message.ok_status orelse false });
+                        }
                     }
                 },
                 .AUTH => {
                     // Handle AUTH challenge
                     if (message.content) |challenge| {
-                        std.debug.print("\r[{s}] AUTH challenge received: {s}\n> ", .{ relay.url, challenge });
+                        if (self.debug_mode) {
+                            std.debug.print("\r[{s}] AUTH challenge received: {s}\n> ", .{ relay.url, challenge });
+                        }
                         self.handleAuth(relay, challenge) catch |err| {
-                            std.debug.print("\r[{s}] Failed to handle AUTH: {}\n> ", .{ relay.url, err });
+                            if (self.debug_mode) {
+                                std.debug.print("\r[{s}] Failed to handle AUTH: {}\n> ", .{ relay.url, err });
+                            }
                         };
                     }
                 },
@@ -368,7 +400,9 @@ pub const InteractiveClient = struct {
             try relay.ws_client.?.sendText(command);
         }
         
-        std.debug.print("[{s}] AUTH response sent\n", .{relay.url});
+        if (self.debug_mode) {
+            std.debug.print("[{s}] AUTH response sent\n", .{relay.url});
+        }
     }
 
     fn inputLoop(self: *Self) !void {
@@ -390,7 +424,9 @@ pub const InteractiveClient = struct {
 
                 // Send message
                 try self.sendMessage(trimmed);
-                std.debug.print("Sent: {s}\n", .{trimmed});
+                if (self.debug_mode) {
+                    std.debug.print("Sent: {s}\n", .{trimmed});
+                }
             } else {
                 // EOF (Ctrl-D)
                 break;
@@ -423,28 +459,36 @@ pub const InteractiveClient = struct {
         var command1_buffer: [4096]u8 = undefined;
         const command1 = try std.fmt.bufPrint(&command1_buffer, "[\"EVENT\",{s}]", .{event1_json});
 
-        std.debug.print("\n[DUAL-POST] Sending to {} relays...\n", .{self.relays.items.len});
-        std.debug.print("Sending: {s}\n", .{command20000});
-        std.debug.print("Sending: {s}\n", .{command1});
+        if (self.debug_mode) {
+            std.debug.print("\n[DUAL-POST] Sending to {} relays...\n", .{self.relays.items.len});
+            std.debug.print("Sending: {s}\n", .{command20000});
+            std.debug.print("Sending: {s}\n", .{command1});
+        }
 
         // Send both events to all relays in parallel
         var sent_count: usize = 0;
         for (self.relays.items) |*relay| {
             // Skip read-only relays
             if (!relay.can_write) {
-                std.debug.print("[{s}] Skipping (read-only relay)\n", .{relay.url});
+                if (self.debug_mode) {
+                    std.debug.print("[{s}] Skipping (read-only relay)\n", .{relay.url});
+                }
                 continue;
             }
             
             // Send kind 20000
             if (relay.is_tls) {
                 relay.tls_client.?.sendText(command20000) catch |err| {
-                    std.debug.print("[{s}] ❌ Failed kind 20000: {}\n", .{ relay.url, err });
+                    if (self.debug_mode) {
+                        std.debug.print("[{s}] ❌ Failed kind 20000: {}\n", .{ relay.url, err });
+                    }
                     continue;
                 };
             } else {
                 relay.ws_client.?.sendText(command20000) catch |err| {
-                    std.debug.print("[{s}] ❌ Failed kind 20000: {}\n", .{ relay.url, err });
+                    if (self.debug_mode) {
+                        std.debug.print("[{s}] ❌ Failed kind 20000: {}\n", .{ relay.url, err });
+                    }
                     continue;
                 };
             }
@@ -452,22 +496,30 @@ pub const InteractiveClient = struct {
             // Send kind 1
             if (relay.is_tls) {
                 relay.tls_client.?.sendText(command1) catch |err| {
-                    std.debug.print("[{s}] ❌ Failed kind 1: {}\n", .{ relay.url, err });
+                    if (self.debug_mode) {
+                        std.debug.print("[{s}] ❌ Failed kind 1: {}\n", .{ relay.url, err });
+                    }
                     continue;
                 };
             } else {
                 relay.ws_client.?.sendText(command1) catch |err| {
-                    std.debug.print("[{s}] ❌ Failed kind 1: {}\n", .{ relay.url, err });
+                    if (self.debug_mode) {
+                        std.debug.print("[{s}] ❌ Failed kind 1: {}\n", .{ relay.url, err });
+                    }
                     continue;
                 };
             }
             
-            std.debug.print("[{s}] ✓ Sent both kinds\n", .{relay.url});
+            if (self.debug_mode) {
+                std.debug.print("[{s}] ✓ Sent both kinds\n", .{relay.url});
+            }
             sent_count += 1;
         }
         
-        std.debug.print("\n📤 Published to {}/{} relays\n", .{ sent_count, self.relays.items.len });
-        std.debug.print("Event IDs: kind20000={s}, kind1={s}\n", .{ event_kind20000.id, event_kind1.id });
+        if (self.debug_mode) {
+            std.debug.print("\n📤 Published to {}/{} relays\n", .{ sent_count, self.relays.items.len });
+            std.debug.print("Event IDs: kind20000={s}, kind1={s}\n", .{ event_kind20000.id, event_kind1.id });
+        }
         
         // Store our event IDs to track when they come back
         self.last_sent_ids[0] = event_kind20000.id;

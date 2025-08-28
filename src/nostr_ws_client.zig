@@ -12,16 +12,18 @@ pub const NostrWsClient = struct {
     url: []const u8,
     relay_info: ?nip11.RelayInfo = null,
     can_write: bool = true,
+    debug_mode: bool = false,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, relay_url: []const u8) Self {
+    pub fn init(allocator: std.mem.Allocator, relay_url: []const u8, debug_mode: bool) Self {
         const is_tls = std.mem.startsWith(u8, relay_url, "wss://");
 
         return .{
             .allocator = allocator,
             .is_tls = is_tls,
             .url = relay_url,
+            .debug_mode = debug_mode,
         };
     }
 
@@ -65,14 +67,16 @@ pub const NostrWsClient = struct {
         } else {
             try self.ws_client.?.sendText(req);
         }
-        std.debug.print("Subscribed to REAL-TIME messages for geohash: {s}\n", .{channel});
+        if (self.debug_mode) {
+            std.debug.print("Subscribed to REAL-TIME messages for geohash: {s}\n", .{channel});
+        }
     }
 
-    pub fn subscribeToChannelSmart(self: *Self, channel: []const u8) !void {
-        // Smart subscription: both kind 1 and 20000 with #g geotag, limit for initial history
+    pub fn subscribeToChannelSmart(self: *Self, channel: []const u8, debug_mode: bool) !void {
+        // Smart subscription: ALL event kinds with #g geotag, limit for initial history
         var req_buffer: [512]u8 = undefined;
         const req = try std.fmt.bufPrint(&req_buffer,
-            \\["REQ","geo",{{"kinds":[1,20000],"#g":["{s}"],"limit":50}}]
+            \\["REQ","geo",{{"#g":["{s}"],"limit":50}}]
         , .{ channel });
 
         if (self.is_tls) {
@@ -80,7 +84,9 @@ pub const NostrWsClient = struct {
         } else {
             try self.ws_client.?.sendText(req);
         }
-        std.debug.print("[{s}] Subscribed to kinds [1,20000] with #g geotag: {s}\n", .{ self.url, channel });
+        if (debug_mode) {
+            std.debug.print("[{s}] Subscribed to ALL event kinds with #g geotag: {s}\n", .{ self.url, channel });
+        }
     }
 
     pub fn subscribeToGlobal(self: *Self) !void {
@@ -97,7 +103,9 @@ pub const NostrWsClient = struct {
         } else {
             try self.ws_client.?.sendText(req);
         }
-        std.debug.print("Subscribed to global feed\n", .{});
+        if (self.debug_mode) {
+            std.debug.print("Subscribed to global feed\n", .{});
+        }
     }
 
     pub fn receiveMessage(self: *Self) !?NostrMessage {
@@ -111,11 +119,15 @@ pub const NostrWsClient = struct {
         defer self.allocator.free(raw_msg);
 
         // Log full raw response for debugging
-        std.debug.print("\n[FULL RAW RESPONSE]: {s}\n", .{raw_msg});
+        if (self.debug_mode) {
+            std.debug.print("\n[FULL RAW RESPONSE]: {s}\n", .{raw_msg});
+        }
 
         return parseNostrMessage(self.allocator, raw_msg) catch |err| {
-            std.debug.print("\n[PARSE ERROR]: Failed to parse: {}\n", .{err});
-            std.debug.print("[FAILED MSG]: {s}\n", .{raw_msg});
+            if (self.debug_mode) {
+                std.debug.print("\n[PARSE ERROR]: Failed to parse: {}\n", .{err});
+                std.debug.print("[FAILED MSG]: {s}\n", .{raw_msg});
+            }
             return null;
         };
     }
@@ -143,6 +155,7 @@ pub const NostrMessage = struct {
     event_id: ?[]const u8 = null, // For OK messages
     ok_status: ?bool = null, // For OK messages: true/false
     tags: ?[][]const u8 = null, // Add tags field to store parsed tags
+    kind: ?u32 = null, // Event kind (1 = text, 20000 = ephemeral, etc.)
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *const NostrMessage) void {
@@ -177,6 +190,7 @@ fn parseNostrMessage(allocator: std.mem.Allocator, json_str: []const u8) !NostrM
     var event_id: ?[]const u8 = null;
     var ok_status: ?bool = null;
     var tags: ?[][]const u8 = null;
+    var kind: ?u32 = null;
 
     if (std.mem.startsWith(u8, json_str, "[\"EVENT\"")) {
         msg_type = .EVENT;
@@ -232,6 +246,15 @@ fn parseNostrMessage(allocator: std.mem.Allocator, json_str: []const u8) !NostrM
                         tags = tag_list;
                     }
                 }
+            }
+        }
+
+        // Extract kind (event type)
+        if (findJsonFieldValueStart(json_str, "kind")) |start| {
+            var end = start;
+            while (end < json_str.len and (json_str[end] >= '0' and json_str[end] <= '9')) : (end += 1) {}
+            if (end > start) {
+                kind = try std.fmt.parseInt(u32, json_str[start..end], 10);
             }
         }
 
@@ -304,6 +327,7 @@ fn parseNostrMessage(allocator: std.mem.Allocator, json_str: []const u8) !NostrM
         .event_id = event_id,
         .ok_status = ok_status,
         .tags = tags,
+        .kind = kind,
         .allocator = allocator,
     };
 }

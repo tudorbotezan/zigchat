@@ -31,7 +31,7 @@ pub const NostrClient = struct {
     pub fn send(self: *NostrClient, data: []const u8) !void {
         if (!self.connected or self.client == null) return error.NotConnected;
         try self.client.?.write(data);
-        std.debug.print("Sent: {s}\n", .{data});
+        // Don't print sent messages - let higher level code handle that
     }
 
     pub fn receive(self: *NostrClient) ![]u8 {

@@ -66,7 +66,15 @@ pub fn main() !void {
     } else if (std.mem.eql(u8, command, "chat")) {
         const channel = if (args.len > 2) args[2] else "9q";
         const relay = if (args.len > 3) args[3] else "wss://relay.damus.io";
-        try cmdInteractive(allocator, channel, relay);
+        // Check for --debug flag
+        var debug_mode = false;
+        for (args) |arg| {
+            if (std.mem.eql(u8, arg, "--debug")) {
+                debug_mode = true;
+                break;
+            }
+        }
+        try cmdInteractive(allocator, channel, relay, debug_mode);
     } else if (std.mem.eql(u8, command, "ws-test")) {
         const url = if (args.len > 2) args[2] else "ws://localhost:8080";
         try cmdWsTest(allocator, url);
@@ -186,7 +194,7 @@ fn cmdChannelReal(allocator: std.mem.Allocator, channel: []const u8, relay_url: 
     std.debug.print("Relay: {s}\n", .{relay_url});
     std.debug.print("{s}\n\n", .{"=" ** 50});
 
-    var client = NostrWsClient.init(allocator, relay_url);
+    var client = NostrWsClient.init(allocator, relay_url, true); // Always debug mode for channel command
     defer client.deinit();
 
     try client.connect();
@@ -267,10 +275,10 @@ fn cmdChannelSimulated(allocator: std.mem.Allocator, channel: []const u8, relay_
     try client.simulateMessages(channel);
 }
 
-fn cmdInteractive(allocator: std.mem.Allocator, channel: []const u8, relay_url: []const u8) !void {
+fn cmdInteractive(allocator: std.mem.Allocator, channel: []const u8, relay_url: []const u8, debug_mode: bool) !void {
     const InteractiveClient = @import("interactive_client.zig").InteractiveClient;
 
-    var client = InteractiveClient.init(allocator, channel, relay_url);
+    var client = InteractiveClient.init(allocator, channel, relay_url, debug_mode);
     defer client.deinit();
 
     try client.start();
