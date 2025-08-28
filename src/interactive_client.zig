@@ -16,6 +16,8 @@ pub const InteractiveClient = struct {
     debug_mode: bool = false,
     seen_events: std.hash_map.StringHashMap(void), // Track seen event IDs for deduplication
     seen_mutex: std.Thread.Mutex,
+    known_users: std.hash_map.StringHashMap([]const u8), // Map of pubkey -> nickname
+    users_mutex: std.Thread.Mutex,
 
     const Self = @This();
 
@@ -180,6 +182,8 @@ pub const InteractiveClient = struct {
             .debug_mode = debug_mode,
             .seen_events = std.hash_map.StringHashMap(void).init(allocator),
             .seen_mutex = .{},
+            .known_users = std.hash_map.StringHashMap([]const u8).init(allocator),
+            .users_mutex = .{},
         };
         
         // Initialize last_sent_ids
@@ -217,6 +221,7 @@ pub const InteractiveClient = struct {
         std.debug.print("Connected to {} relays\n", .{self.relay_threads.items.len});
         std.debug.print("Commands:\n", .{});
         std.debug.print("  Type a message and press Enter to send\n", .{});
+        std.debug.print("  /users - Show active users with their tags\n", .{});
         std.debug.print("  /quit or Ctrl-C to exit\n", .{});
         std.debug.print("{s}\n\n", .{"-" ** 50});
 
@@ -330,18 +335,38 @@ pub const InteractiveClient = struct {
                             }
                         }
 
-                        const display_name = if (nickname) |n| n else blk: {
-                            // Fallback to first 8 chars of pubkey if no nickname
-                            const author_hex = if (message.author) |author| blk2: {
-                                if (author.len >= 8) {
-                                    break :blk2 author[0..8];
-                                } else if (author.len > 0) {
-                                    break :blk2 author;
-                                } else {
-                                    break :blk2 "anon";
+                        // Store user info if new
+                        if (!is_our_echo and message.author != null and nickname != null) {
+                            self.users_mutex.lock();
+                            defer self.users_mutex.unlock();
+                            
+                            if (!self.known_users.contains(message.author.?)) {
+                                const author_copy = self.allocator.dupe(u8, message.author.?) catch null;
+                                const nick_copy = self.allocator.dupe(u8, nickname.?) catch null;
+                                if (author_copy != null and nick_copy != null) {
+                                    self.known_users.put(author_copy.?, nick_copy.?) catch {};
                                 }
-                            } else "anon";
-                            break :blk author_hex;
+                            }
+                        }
+                        
+                        // Get display name and user tag
+                        var name_buf: [128]u8 = undefined;
+                        const display_prefix = if (is_our_echo) blk: {
+                            break :blk "[You]";
+                        } else blk: {
+                            const base_name = if (nickname) |n| n else "anon";
+                            
+                            // Add user ID tag (#xxxx) from first 4 chars of pubkey
+                            if (message.author) |author| {
+                                if (author.len >= 4) {
+                                    const tag = author[0..4];
+                                    const formatted = std.fmt.bufPrint(&name_buf, "[{s}#{s}]", .{ base_name, tag }) catch "[anon]";
+                                    break :blk formatted;
+                                }
+                            }
+                            
+                            const formatted = std.fmt.bufPrint(&name_buf, "[{s}]", .{base_name}) catch "[anon]";
+                            break :blk formatted;
                         };
 
                         if (is_our_echo and self.debug_mode) {
@@ -349,11 +374,10 @@ pub const InteractiveClient = struct {
                         }
 
                         // Clear current line, print message, restore prompt
-                        const prefix = if (is_our_echo) "[You]" else display_name;
                         if (self.debug_mode and message.kind != null) {
-                            std.debug.print("\r{s: <50}\r[kind:{d}][{s}]: {s}\n> ", .{ " ", message.kind.?, prefix, content });
+                            std.debug.print("\r{s: <50}\r[kind:{d}]{s}: {s}\n> ", .{ " ", message.kind.?, display_prefix, content });
                         } else {
-                            std.debug.print("\r{s: <50}\r[{s}]: {s}\n> ", .{ " ", prefix, content });
+                            std.debug.print("\r{s: <50}\r{s}: {s}\n> ", .{ " ", display_prefix, content });
                         }
                     }
                 },
@@ -440,6 +464,32 @@ pub const InteractiveClient = struct {
         }
     }
 
+    fn showUserList(self: *Self) void {
+        self.users_mutex.lock();
+        defer self.users_mutex.unlock();
+        
+        std.debug.print("\n=== Active Users ===\n", .{});
+        
+        var iter = self.known_users.iterator();
+        var count: usize = 0;
+        while (iter.next()) |entry| {
+            const pubkey = entry.key_ptr.*;
+            const nickname = entry.value_ptr.*;
+            if (pubkey.len >= 4) {
+                const tag = pubkey[0..4];
+                std.debug.print("  {s}#{s} (full: {s}...)\n", .{ nickname, tag, pubkey[0..16] });
+                count += 1;
+            }
+        }
+        
+        if (count == 0) {
+            std.debug.print("  No other users seen yet\n", .{});
+        }
+        
+        std.debug.print("\nUse @username#tag or just #tag to mention users\n", .{});
+        std.debug.print("{s}\n> ", .{"-" ** 30});
+    }
+
     fn inputLoop(self: *Self) !void {
         const stdin = std.io.getStdIn().reader();
         var buf: [1024]u8 = undefined;
@@ -455,6 +505,9 @@ pub const InteractiveClient = struct {
                 if (std.mem.eql(u8, trimmed, "/quit")) {
                     std.debug.print("Goodbye!\n", .{});
                     break;
+                } else if (std.mem.eql(u8, trimmed, "/users")) {
+                    self.showUserList();
+                    continue;
                 }
 
                 // Send message
@@ -476,6 +529,7 @@ pub const InteractiveClient = struct {
         const tags = [_][]const []const u8{
             &[_][]const u8{ "g", self.channel },
             &[_][]const u8{ "n", self.username },
+            &[_][]const u8{ "client", "zig-chat" },
         };
 
         // Create only kind 20000 (ephemeral) event for chat messages
@@ -552,6 +606,16 @@ pub const InteractiveClient = struct {
         }
         self.seen_events.deinit();
         self.seen_mutex.unlock();
+        
+        // Clean up known users map
+        self.users_mutex.lock();
+        var users_iter = self.known_users.iterator();
+        while (users_iter.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.free(entry.value_ptr.*);
+        }
+        self.known_users.deinit();
+        self.users_mutex.unlock();
         
         // Clean up message queue
         self.message_queue.deinit();
