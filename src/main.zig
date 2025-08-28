@@ -63,6 +63,10 @@ pub fn main() !void {
         const channel = if (args.len > 2) args[2] else "9q";
         const relay = if (args.len > 3) args[3] else "wss://relay.damus.io";
         try cmdChannel(allocator, channel, relay);
+    } else if (std.mem.eql(u8, command, "chat")) {
+        const channel = if (args.len > 2) args[2] else "9q";
+        const relay = if (args.len > 3) args[3] else "wss://relay.damus.io";
+        try cmdInteractive(allocator, channel, relay);
     } else if (std.mem.eql(u8, command, "ws-test")) {
         const url = if (args.len > 2) args[2] else "ws://localhost:8080";
         try cmdWsTest(allocator, url);
@@ -87,6 +91,7 @@ fn printUsage() !void {
         \\  bitchat sub [options]           Subscribe to notes
         \\  bitchat auth test               Test AUTH flow
         \\  bitchat channel [name] [relay]  Join a channel (default: #9q)
+        \\  bitchat chat [name] [relay]     Interactive chat mode (can send messages)
         \\  bitchat ws-test [url]           Test WebSocket connection
         \\
     , .{});
@@ -260,6 +265,15 @@ fn cmdChannelSimulated(allocator: std.mem.Allocator, channel: []const u8, relay_
     std.debug.print("{s}\n\n", .{"-" ** 50});
 
     try client.simulateMessages(channel);
+}
+
+fn cmdInteractive(allocator: std.mem.Allocator, channel: []const u8, relay_url: []const u8) !void {
+    const InteractiveClient = @import("interactive_client.zig").InteractiveClient;
+    
+    var client = InteractiveClient.init(allocator, channel, relay_url);
+    defer client.deinit();
+    
+    try client.start();
 }
 
 fn cmdWsTest(allocator: std.mem.Allocator, url: []const u8) !void {

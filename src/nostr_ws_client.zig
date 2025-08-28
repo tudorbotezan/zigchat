@@ -35,11 +35,11 @@ pub const NostrWsClient = struct {
 
     pub fn subscribeToChannel(self: *Self, channel: []const u8) !void {
         // Create REQ message for channel subscription
-        // For geohash channels, use kind 20000 and #g tag
-        // Format: ["REQ", "subscription_id", {"kinds": [20000], "#g": ["geohash"], "limit": 100}]
+        // For geohash channels, subscribe to both kind 1 and 20000 with #g tag
+        // Format: ["REQ", "subscription_id", {"kinds": [1,20000], "#g": ["geohash"], "limit": 100}]
         var req_buffer: [512]u8 = undefined;
         const req = try std.fmt.bufPrint(&req_buffer,
-            \\["REQ","{s}",{{"kinds":[20000],"#g":["{s}"],"limit":100}}]
+            \\["REQ","{s}",{{"kinds":[1,20000],"#g":["{s}"],"limit":100}}]
         , .{ self.subscription_id, channel });
 
         if (self.is_tls) {
@@ -74,6 +74,11 @@ pub const NostrWsClient = struct {
             }
         };
         defer self.allocator.free(raw_msg);
+
+        // Debug: log raw messages to see relay responses
+        if (std.mem.startsWith(u8, raw_msg, "[\"OK\"")) {
+            std.debug.print("\n[RELAY RAW]: {s}\n", .{raw_msg});
+        }
 
         return try parseNostrMessage(self.allocator, raw_msg);
     }
