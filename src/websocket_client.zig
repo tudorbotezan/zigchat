@@ -40,10 +40,6 @@ pub const WebSocketClient = struct {
         // Connect TCP
         self.tcp_client = try net.tcpConnectToHost(self.allocator, host, port);
         errdefer if (self.tcp_client) |tcp| tcp.close();
-        
-        // Set socket to non-blocking mode for better message streaming
-        const sock_flags = try std.posix.fcntl(self.tcp_client.?.handle, std.posix.F.GETFL, 0);
-        _ = try std.posix.fcntl(self.tcp_client.?.handle, std.posix.F.SETFL, sock_flags | std.posix.O.NONBLOCK);
 
         const is_tls = std.mem.eql(u8, uri.scheme, "wss");
 
@@ -64,6 +60,11 @@ pub const WebSocketClient = struct {
 
         self.connected = true;
         std.debug.print("WebSocket connected!\n", .{});
+        
+        // Now set socket to non-blocking mode after handshake is complete
+        const sock_flags = try std.posix.fcntl(self.tcp_client.?.handle, std.posix.F.GETFL, 0);
+        const nonblock_flag = if (@hasDecl(std.posix.O, "NONBLOCK")) std.posix.O.NONBLOCK else 0x0004; // O_NONBLOCK on macOS
+        _ = try std.posix.fcntl(self.tcp_client.?.handle, std.posix.F.SETFL, sock_flags | nonblock_flag);
     }
 
     pub fn sendText(self: *Self, text: []const u8) !void {
@@ -85,7 +86,7 @@ pub const WebSocketClient = struct {
             return error.NotConnected;
         }
 
-        // Try to receive with non-blocking behavior
+        // nextMessage() returns ?Message, not an error union
         if (self.ws_stream.?.nextMessage()) |msg| {
             defer msg.deinit();
 
@@ -93,15 +94,14 @@ pub const WebSocketClient = struct {
                 const text_copy = try self.allocator.dupe(u8, msg.payload);
                 return text_copy;
             }
-        } else |err| {
+        }
+
+        // Check for errors on the stream
+        if (self.ws_stream.?.err) |err| {
             // Handle non-blocking socket errors
             if (err == error.WouldBlock or err == error.Again) {
                 return null; // No data available right now
             }
-            return err; // Real error
-        }
-
-        if (self.ws_stream.?.err) |err| {
             // Don't print WouldBlock errors - they're expected in non-blocking mode
             if (err != error.WouldBlock and err != error.Again) {
                 std.debug.print("WebSocket error: {}\n", .{err});

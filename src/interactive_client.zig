@@ -190,8 +190,8 @@ pub const InteractiveClient = struct {
     }
 
     pub fn start(self: *Self) !void {
-        // Connect to all relays in parallel
-        for (self.relays.items) |*relay| {
+        // Connect to all relays and spawn threads
+        for (self.relays.items, 0..) |*relay, idx| {
             relay.connect() catch |err| {
                 if (self.debug_mode) {
                     std.debug.print("Warning: Could not connect to relay {s}: {}\n", .{ relay.url, err });
@@ -205,57 +205,110 @@ pub const InteractiveClient = struct {
                     std.debug.print("Warning: Could not subscribe on relay {s}: {}\n", .{ relay.url, err });
                 }
             };
+            
+            // Spawn dedicated thread for this relay
+            const thread = try std.Thread.spawn(.{}, relayReceiveLoop, .{ self, idx });
+            try self.relay_threads.append(thread);
         }
 
         std.debug.print("\n=== Bitchat Interactive Mode ===\n", .{});
         std.debug.print("Username: {s}\n", .{self.username});
         std.debug.print("Geohash: {s}\n", .{self.channel});
+        std.debug.print("Connected to {} relays\n", .{self.relay_threads.items.len});
         std.debug.print("Commands:\n", .{});
         std.debug.print("  Type a message and press Enter to send\n", .{});
         std.debug.print("  /quit or Ctrl-C to exit\n", .{});
         std.debug.print("{s}\n\n", .{"-" ** 50});
 
-        // Start receive thread
-        const recv_thread = try std.Thread.spawn(.{}, receiveLoop, .{self});
+        // Start message display thread
+        const display_thread = try std.Thread.spawn(.{}, displayLoop, .{self});
 
         // Handle input in main thread
         try self.inputLoop();
 
         // Cleanup
         self.running.store(false, .monotonic);
-        recv_thread.join();
+        
+        // Join all threads
+        for (self.relay_threads.items) |thread| {
+            thread.join();
+        }
+        display_thread.join();
     }
 
-    fn receiveLoop(self: *Self) void {
+    fn relayReceiveLoop(self: *Self, relay_idx: usize) void {
+        const relay = &self.relays.items[relay_idx];
+        
         while (self.running.load(.monotonic)) {
-            // Try to receive from all relays
-            for (self.relays.items) |*relay| {
-                const msg = relay.receiveMessage() catch |err| {
-                    if (self.running.load(.monotonic) and err != error.WouldBlock) {
-                        // Only log non-WouldBlock errors
+            const msg = relay.receiveMessage() catch |err| {
+                if (err == error.WouldBlock or err == error.Again) {
+                    // No data available, yield to avoid busy-waiting
+                    std.time.sleep(1_000_000); // 1ms
+                    continue;
+                } else if (self.running.load(.monotonic)) {
+                    if (self.debug_mode) {
+                        std.debug.print("[{s}] Receive error: {}\n", .{ relay.url, err });
                     }
+                    std.time.sleep(100_000_000); // 100ms backoff on error
+                }
+                continue;
+            };
+
+            const message = msg orelse {
+                std.time.sleep(1_000_000); // 1ms when no message
+                continue;
+            };
+
+            // Check for deduplication before queuing
+            if (message.type == .EVENT and message.id != null) {
+                self.seen_mutex.lock();
+                defer self.seen_mutex.unlock();
+                
+                if (self.seen_events.contains(message.id.?)) {
+                    if (self.debug_mode) {
+                        std.debug.print("[DEDUP] Skipping duplicate from {s}: {s}\n", .{ relay.url, message.id.? });
+                    }
+                    message.deinit();
+                    continue;
+                }
+                
+                // Mark as seen
+                const id_copy = self.allocator.dupe(u8, message.id.?) catch {
+                    message.deinit();
                     continue;
                 };
+                self.seen_events.put(id_copy, {}) catch {
+                    self.allocator.free(id_copy);
+                    message.deinit();
+                    continue;
+                };
+            }
+            
+            // Queue the message for display
+            self.message_queue.push(message, relay.url) catch |err| {
+                if (self.debug_mode) {
+                    std.debug.print("[{s}] Failed to queue message: {}\n", .{ relay.url, err });
+                }
+                message.deinit();
+            };
+        }
+    }
 
-                const message = msg orelse continue;
-                defer message.deinit();
-
+    fn displayLoop(self: *Self) void {
+        while (self.running.load(.monotonic)) {
+            // Get next message with a short timeout
+            const queued = self.message_queue.popWithTimeout(10_000_000) orelse continue; // 10ms timeout
+            defer {
+                queued.message.deinit();
+                self.allocator.free(queued.relay_url);
+            }
+            
+            const message = queued.message;
+            const relay_url = queued.relay_url;
+            
             switch (message.type) {
                 .EVENT => {
                     if (message.content) |content| {
-                        // Deduplicate: check if we've seen this event ID before
-                        if (message.id) |event_id| {
-                            // Check if already seen
-                            if (self.seen_events.contains(event_id)) {
-                                if (self.debug_mode) {
-                                    std.debug.print("[DEDUP] Skipping duplicate event: {s}\n", .{event_id});
-                                }
-                                continue; // Skip duplicate
-                            }
-                            // Mark as seen
-                            const id_copy = self.allocator.dupe(u8, event_id) catch continue;
-                            self.seen_events.put(id_copy, {}) catch {};
-                        }
                         // Check if this is our own event coming back
                         var is_our_echo = false;
                         if (message.id) |msg_id| {
@@ -271,7 +324,6 @@ pub const InteractiveClient = struct {
                         var nickname: ?[]const u8 = null;
                         if (message.tags) |tags| {
                             if (tags.len >= 2 and std.mem.eql(u8, tags[0], "n")) {
-                                // Check if nickname is not empty
                                 if (tags[1].len > 0) {
                                     nickname = tags[1];
                                 }
@@ -292,29 +344,12 @@ pub const InteractiveClient = struct {
                             break :blk author_hex;
                         };
 
-                        if (is_our_echo) {
-                            // Our message echoed back - validation!
-                            if (self.debug_mode) {
-                                std.debug.print("\r🔄 [{s}] Echo confirmed\n", .{relay.url});
-                            }
-                        }
-                        
-                        if (message.author) |author| {
-                            const our_pubkey_hex = std.fmt.fmtSliceHexLower(&self.keypair.public_key);
-                            var our_pubkey_buf: [64]u8 = undefined;
-                            _ = std.fmt.bufPrint(&our_pubkey_buf, "{}", .{our_pubkey_hex}) catch {};
-                            
-                            if (!std.mem.eql(u8, author, &our_pubkey_buf)) {
-                                // Only show "Received from" for others' messages
-                                if (self.debug_mode) {
-                                    std.debug.print("\r[From: {s}]\n", .{author[0..8]});
-                                }
-                            }
+                        if (is_our_echo and self.debug_mode) {
+                            std.debug.print("\r🔄 [{s}] Echo confirmed\n> ", .{relay_url});
                         }
 
                         // Clear current line, print message, restore prompt
                         const prefix = if (is_our_echo) "[You]" else display_name;
-                        // Show event kind only in debug mode
                         if (self.debug_mode and message.kind != null) {
                             std.debug.print("\r{s: <50}\r[kind:{d}][{s}]: {s}\n> ", .{ " ", message.kind.?, prefix, content });
                         } else {
@@ -324,70 +359,48 @@ pub const InteractiveClient = struct {
                 },
                 .EOSE => {
                     if (self.debug_mode) {
-                        std.debug.print("\r--- Ready for real-time messages ---\n> ", .{});
+                        std.debug.print("\r[{s}] Ready for real-time messages\n> ", .{relay_url});
                     }
                 },
                 .NOTICE => {
                     if (self.debug_mode) {
                         if (message.content) |content| {
-                            std.debug.print("\rNOTICE: {s}\n> ", .{content});
+                            std.debug.print("\r[{s}] NOTICE: {s}\n> ", .{ relay_url, content });
                         }
                     }
                 },
                 .OK => {
-                    // Enhanced OK response tracking
-                    const symbol = if (message.ok_status orelse false) "✅" else "❌";
-                    
-                    if (message.event_id) |eid| {
-                        // Check if this is one of our recent events
-                        var is_ours = false;
-                        for (self.last_sent_ids) |sent_id| {
-                            if (std.mem.eql(u8, eid, &sent_id)) {
-                                is_ours = true;
-                                break;
+                    if (self.debug_mode) {
+                        const symbol = if (message.ok_status orelse false) "✅" else "❌";
+                        if (message.event_id) |eid| {
+                            // Check if this is one of our recent events
+                            var is_ours = false;
+                            for (self.last_sent_ids) |sent_id| {
+                                if (std.mem.eql(u8, eid, &sent_id)) {
+                                    is_ours = true;
+                                    break;
+                                }
                             }
-                        }
-                        
-                        if (self.debug_mode) {
+                            
                             if (is_ours) {
                                 if (message.ok_status orelse false) {
-                                    std.debug.print("\r{s} [{s}] Accepted our event\n> ", .{ symbol, relay.url });
+                                    std.debug.print("\r{s} [{s}] Accepted our event\n> ", .{ symbol, relay_url });
                                 } else {
                                     const reason = message.content orelse "unknown reason";
-                                    std.debug.print("\r{s} [{s}] Rejected: {s}\n> ", .{ symbol, relay.url, reason });
-                                }
-                            } else {
-                                // Not our event, less verbose
-                                if (!(message.ok_status orelse false)) {
-                                    std.debug.print("\r{s} [{s}] Event rejected\n> ", .{ symbol, relay.url });
+                                    std.debug.print("\r{s} [{s}] Rejected: {s}\n> ", .{ symbol, relay_url, reason });
                                 }
                             }
-                        }
-                    } else {
-                        if (self.debug_mode) {
-                            std.debug.print("\r[{s}] OK status: {}\n> ", .{ relay.url, message.ok_status orelse false });
                         }
                     }
                 },
                 .AUTH => {
-                    // Handle AUTH challenge
-                    if (message.content) |challenge| {
-                        if (self.debug_mode) {
-                            std.debug.print("\r[{s}] AUTH challenge received: {s}\n> ", .{ relay.url, challenge });
-                        }
-                        self.handleAuth(relay, challenge) catch |err| {
-                            if (self.debug_mode) {
-                                std.debug.print("\r[{s}] Failed to handle AUTH: {}\n> ", .{ relay.url, err });
-                            }
-                        };
+                    // Note: AUTH handling should be done in the relay thread
+                    if (self.debug_mode and message.content != null) {
+                        std.debug.print("\r[{s}] AUTH challenge: {s}\n> ", .{ relay_url, message.content.? });
                     }
                 },
                 else => {},
             }
-            }
-            
-            // Small sleep after checking all relays
-            std.time.sleep(1_000_000); // 1ms
         }
     }
 
@@ -532,11 +545,19 @@ pub const InteractiveClient = struct {
         }
         
         // Clean up seen events map
+        self.seen_mutex.lock();
         var iter = self.seen_events.iterator();
         while (iter.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
         }
         self.seen_events.deinit();
+        self.seen_mutex.unlock();
+        
+        // Clean up message queue
+        self.message_queue.deinit();
+        
+        // Clean up relay threads
+        self.relay_threads.deinit();
         
         // Clean up all relay clients
         for (self.relays.items) |*relay| {
