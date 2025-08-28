@@ -1,9 +1,16 @@
 {
   "9q": [
-    "wss://relay.wellorder.net",
-    "wss://nostr-pub.wellorder.net",
-    "wss://nostr-verified.wellorder.net",
-    "wss://nostr-dev.wellorder.net"
+    "wss://wot.soundhsa.com",
+    "wss://relayone.soundhsa.com",
+    "wss://offchain.pub",
+    "wss://satsage.xyz",
+    "wss://relay-testnet.k8s.layer3.news",
+    "wss://relay.cosmicbolt.net",
+    "wss://nostr.hekster.org",
+    "wss://nostr-relay.zimage.com",
+    "wss://relay.aloftus.io",
+    "wss://nostr.2b9t.xyz",
+    "wss://strfry.bonsai.com"
   ],
   "9": [
     "wss://relay.wellorder.net",

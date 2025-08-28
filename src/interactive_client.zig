@@ -423,6 +423,8 @@ pub const InteractiveClient = struct {
         const command1 = try std.fmt.bufPrint(&command1_buffer, "[\"EVENT\",{s}]", .{event1_json});
 
         std.debug.print("\n[DUAL-POST] Sending to {} relays...\n", .{self.relays.items.len});
+        std.debug.print("Sending: {s}\n", .{command20000});
+        std.debug.print("Sending: {s}\n", .{command1});
 
         // Send both events to all relays in parallel
         var sent_count: usize = 0;
