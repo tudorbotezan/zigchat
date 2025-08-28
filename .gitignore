@@ -4,7 +4,7 @@ zig-out/
 
 # Local build executable
 build.zig
-
+.zig-cache/
 # Compiled object files, libraries and executables
 *.o
 *.a

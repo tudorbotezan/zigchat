@@ -153,17 +153,22 @@ fn cmdAuthTest(allocator: std.mem.Allocator) !void {
 }
 
 fn cmdChannel(allocator: std.mem.Allocator, channel: []const u8, relay_url: []const u8) !void {
-    // Try real WebSocket first, fall back to simulation if it fails
-    if (std.mem.startsWith(u8, relay_url, "ws://")) {
-        // Use real WebSocket for non-TLS connections
+    // Try real WebSocket (both ws:// and wss://)
+    if (std.mem.startsWith(u8, relay_url, "ws://") or std.mem.startsWith(u8, relay_url, "wss://")) {
         cmdChannelReal(allocator, channel, relay_url) catch |err| {
             std.debug.print("WebSocket connection failed: {}\n", .{err});
+
+            if (std.mem.startsWith(u8, relay_url, "wss://")) {
+                std.debug.print("\nTLS connection failed. You can use a proxy as a workaround:\n", .{});
+                std.debug.print("1. pip3 install websockets\n", .{});
+                std.debug.print("2. python3 ws_proxy.py 8080 {s}\n", .{relay_url});
+                std.debug.print("3. ./zig-out/bin/bitchat channel {s} ws://localhost:8080\n\n", .{channel});
+            }
+
             std.debug.print("Falling back to simulation...\n\n", .{});
             try cmdChannelSimulated(allocator, channel, relay_url);
         };
     } else {
-        // For now, wss:// falls back to simulation
-        std.debug.print("TLS support (wss://) coming soon. Using simulation...\n\n", .{});
         try cmdChannelSimulated(allocator, channel, relay_url);
     }
 }
@@ -171,7 +176,7 @@ fn cmdChannel(allocator: std.mem.Allocator, channel: []const u8, relay_url: []co
 fn cmdChannelReal(allocator: std.mem.Allocator, channel: []const u8, relay_url: []const u8) !void {
     const NostrWsClient = @import("nostr_ws_client.zig").NostrWsClient;
 
-    std.debug.print("\n=== Bitchat TUI - Channel #{s} ===\n", .{channel});
+    std.debug.print("\n=== Bitchat TUI - Geohash: {s} ===\n", .{channel});
     std.debug.print("{s}\n", .{"=" ** 50});
     std.debug.print("Relay: {s}\n", .{relay_url});
     std.debug.print("{s}\n\n", .{"=" ** 50});
@@ -180,22 +185,40 @@ fn cmdChannelReal(allocator: std.mem.Allocator, channel: []const u8, relay_url: 
     defer client.deinit();
 
     try client.connect();
-    try client.subscribeToChannel(channel);
+
+    // If channel is "global", subscribe to all messages, otherwise filter by channel
+    if (std.mem.eql(u8, channel, "global")) {
+        try client.subscribeToGlobal();
+    } else {
+        try client.subscribeToChannel(channel);
+    }
 
     std.debug.print("Listening for messages... (Ctrl-C to quit)\n", .{});
     std.debug.print("{s}\n\n", .{"-" ** 50});
 
     // Message receive loop
+    var message_count: usize = 0;
     while (true) {
-        const msg = try client.receiveMessage() orelse continue;
-        defer msg.deinit();
+        const msg = client.receiveMessage() catch |err| {
+            std.debug.print("Error receiving message: {}\n", .{err});
+            continue;
+        };
 
-        switch (msg.type) {
+        const message = msg orelse {
+            // No message received, but still connected
+            std.time.sleep(100 * std.time.ns_per_ms);
+            continue;
+        };
+
+        defer message.deinit();
+        message_count += 1;
+
+        switch (message.type) {
             .EVENT => {
-                if (msg.content) |content| {
+                if (message.content) |content| {
                     // Format: [timestamp] author: content
-                    const timestamp = msg.created_at orelse std.time.timestamp();
-                    const author_short = if (msg.author) |author|
+                    const timestamp = message.created_at orelse std.time.timestamp();
+                    const author_short = if (message.author) |author|
                         if (author.len > 8) author[0..8] else author
                     else
                         "unknown";
@@ -207,7 +230,7 @@ fn cmdChannelReal(allocator: std.mem.Allocator, channel: []const u8, relay_url: 
                 std.debug.print("--- End of stored events ---\n", .{});
             },
             .NOTICE => {
-                if (msg.content) |content| {
+                if (message.content) |content| {
                     std.debug.print("NOTICE: {s}\n", .{content});
                 }
             },

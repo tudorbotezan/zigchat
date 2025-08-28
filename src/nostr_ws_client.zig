@@ -1,35 +1,53 @@
 const std = @import("std");
 const WebSocketClient = @import("websocket_client.zig").WebSocketClient;
+const TlsWebSocketClient = @import("websocket_tls.zig").TlsWebSocketClient;
 
 pub const NostrWsClient = struct {
     allocator: std.mem.Allocator,
-    ws_client: WebSocketClient,
+    ws_client: ?WebSocketClient = null,
+    tls_client: ?TlsWebSocketClient = null,
     subscription_id: []const u8 = "1",
+    is_tls: bool,
+    url: []const u8,
 
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator, relay_url: []const u8) Self {
+        const is_tls = std.mem.startsWith(u8, relay_url, "wss://");
+
         return .{
             .allocator = allocator,
-            .ws_client = WebSocketClient.init(allocator, relay_url),
+            .is_tls = is_tls,
+            .url = relay_url,
         };
     }
 
     pub fn connect(self: *Self) !void {
-        try self.ws_client.connect();
+        if (self.is_tls) {
+            self.tls_client = TlsWebSocketClient.init(self.allocator, self.url);
+            try self.tls_client.?.connect();
+        } else {
+            self.ws_client = WebSocketClient.init(self.allocator, self.url);
+            try self.ws_client.?.connect();
+        }
         std.debug.print("Connected to Nostr relay\n", .{});
     }
 
     pub fn subscribeToChannel(self: *Self, channel: []const u8) !void {
         // Create REQ message for channel subscription
-        // Format: ["REQ", "subscription_id", {"kinds": [1], "#t": ["channel_name"], "limit": 100}]
+        // For geohash channels, use kind 20000 and #g tag
+        // Format: ["REQ", "subscription_id", {"kinds": [20000], "#g": ["geohash"], "limit": 100}]
         var req_buffer: [512]u8 = undefined;
         const req = try std.fmt.bufPrint(&req_buffer,
-            \\["REQ","{s}",{{"kinds":[1],"#t":["{s}"],"limit":100}}]
+            \\["REQ","{s}",{{"kinds":[20000],"#g":["{s}"],"limit":100}}]
         , .{ self.subscription_id, channel });
 
-        try self.ws_client.sendText(req);
-        std.debug.print("Subscribed to channel: #{s}\n", .{channel});
+        if (self.is_tls) {
+            try self.tls_client.?.sendText(req);
+        } else {
+            try self.ws_client.?.sendText(req);
+        }
+        std.debug.print("Subscribed to geohash: {s}\n", .{channel});
     }
 
     pub fn subscribeToGlobal(self: *Self) !void {
@@ -39,19 +57,34 @@ pub const NostrWsClient = struct {
             \\["REQ","{s}",{{"kinds":[1],"limit":50}}]
         , .{self.subscription_id});
 
-        try self.ws_client.sendText(req);
+        if (self.is_tls) {
+            try self.tls_client.?.sendText(req);
+        } else {
+            try self.ws_client.?.sendText(req);
+        }
         std.debug.print("Subscribed to global feed\n", .{});
     }
 
     pub fn receiveMessage(self: *Self) !?NostrMessage {
-        const raw_msg = try self.ws_client.receive() orelse return null;
+        const raw_msg = blk: {
+            if (self.is_tls) {
+                break :blk try self.tls_client.?.receive() orelse return null;
+            } else {
+                break :blk try self.ws_client.?.receive() orelse return null;
+            }
+        };
         defer self.allocator.free(raw_msg);
 
         return try parseNostrMessage(self.allocator, raw_msg);
     }
 
     pub fn close(self: *Self) void {
-        self.ws_client.close();
+        if (self.ws_client) |*client| {
+            client.close();
+        }
+        if (self.tls_client) |*client| {
+            client.close();
+        }
     }
 
     pub fn deinit(self: *Self) void {
