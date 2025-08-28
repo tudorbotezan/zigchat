@@ -103,12 +103,19 @@ pub const NostrMessage = struct {
     author: ?[]const u8 = null,
     created_at: ?i64 = null,
     id: ?[]const u8 = null,
+    tags: ?[][]const u8 = null,  // Add tags field to store parsed tags
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *const NostrMessage) void {
         if (self.content) |content| self.allocator.free(content);
         if (self.author) |author| self.allocator.free(author);
         if (self.id) |id| self.allocator.free(id);
+        if (self.tags) |tags| {
+            for (tags) |tag| {
+                self.allocator.free(tag);
+            }
+            self.allocator.free(tags);
+        }
     }
 };
 
@@ -127,6 +134,7 @@ fn parseNostrMessage(allocator: std.mem.Allocator, json_str: []const u8) !NostrM
     var content: ?[]const u8 = null;
     var author: ?[]const u8 = null;
     var created_at: ?i64 = null;
+    var tags: ?[][]const u8 = null;
 
     if (std.mem.startsWith(u8, json_str, "[\"EVENT\"")) {
         msg_type = .EVENT;
@@ -143,6 +151,30 @@ fn parseNostrMessage(allocator: std.mem.Allocator, json_str: []const u8) !NostrM
             author = try allocator.dupe(u8, json_str[pubkey_start..end]);
         }
 
+        // Extract tags to find nickname
+        if (std.mem.indexOf(u8, json_str, "\"tags\":[")) |tags_pos| {
+            const tags_start = tags_pos + "\"tags\":[".len;
+            // Find the matching closing bracket
+            var bracket_count: i32 = 1;
+            var i = tags_start;
+            while (i < json_str.len and bracket_count > 0) : (i += 1) {
+                if (json_str[i] == '[') bracket_count += 1;
+                if (json_str[i] == ']') bracket_count -= 1;
+            }
+            
+            // Parse nickname tag if present
+            const tags_str = json_str[tags_start..i-1];
+            if (std.mem.indexOf(u8, tags_str, "[\"n\",\"")) |n_tag_pos| {
+                const nick_start = n_tag_pos + "[\"n\",\"".len;
+                if (std.mem.indexOf(u8, tags_str[nick_start..], "\"")) |nick_end| {
+                    var tag_list = try allocator.alloc([]const u8, 2);
+                    tag_list[0] = try allocator.dupe(u8, "n");
+                    tag_list[1] = try allocator.dupe(u8, tags_str[nick_start..nick_start + nick_end]);
+                    tags = tag_list;
+                }
+            }
+        }
+        
         // Extract created_at
         if (std.mem.indexOf(u8, json_str, "\"created_at\":")) |created_at_pos| {
             const start = created_at_pos + "\"created_at\":".len;
@@ -172,6 +204,7 @@ fn parseNostrMessage(allocator: std.mem.Allocator, json_str: []const u8) !NostrM
         .content = content,
         .author = author,
         .created_at = created_at,
+        .tags = tags,
         .allocator = allocator,
     };
 }

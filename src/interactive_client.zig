@@ -13,6 +13,20 @@ pub const InteractiveClient = struct {
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator, channel: []const u8, relay_url: []const u8) Self {
+        // Ask for username
+        const stdin = std.io.getStdIn().reader();
+        const stdout = std.io.getStdOut().writer();
+        
+        stdout.print("Enter your username: ", .{}) catch {};
+        var username_buf: [64]u8 = undefined;
+        var username: []const u8 = "anon";
+        if (stdin.readUntilDelimiterOrEof(&username_buf, '\n') catch null) |input| {
+            const trimmed = std.mem.trim(u8, input, " \t\r\n");
+            if (trimmed.len > 0) {
+                username = allocator.dupe(u8, trimmed) catch "anon";
+            }
+        }
+        
         // Generate a keypair for this session
         const keypair = nostr_crypto.KeyPair.generate() catch blk: {
             std.debug.print("Failed to generate keypair, using test keypair\n", .{});
@@ -34,7 +48,7 @@ pub const InteractiveClient = struct {
             .channel = channel,
             .running = std.atomic.Value(bool).init(true),
             .keypair = keypair,
-            .username = "11111",
+            .username = username,
         };
     }
 
@@ -77,25 +91,25 @@ pub const InteractiveClient = struct {
                 switch (message.type) {
                     .EVENT => {
                         if (message.content) |content| {
-                            const author_hex = if (message.author) |author|
-                                if (author.len > 8) author[0..8] else author
-                            else
-                                "00000000";
-
-                            // Generate a visual name from the hex (use first 4 chars as seed)
-                            const visual_names = [_][]const u8{ "Alice", "Bob", "Charlie", "David", "Eve", "Frank", "Grace", "Heidi", "Ivan", "Judy", "Kevin", "Laura", "Mike", "Nancy", "Oscar", "Peggy" };
-                            var name_index: usize = 0;
-                            if (message.author) |author| {
-                                // Use first byte of pubkey to pick a name
-                                if (author.len >= 2) {
-                                    const byte = std.fmt.parseInt(u8, author[0..2], 16) catch 0;
-                                    name_index = byte % visual_names.len;
+                            // Try to extract nickname from tags
+                            var nickname: ?[]const u8 = null;
+                            if (message.tags) |tags| {
+                                if (tags.len >= 2 and std.mem.eql(u8, tags[0], "n")) {
+                                    nickname = tags[1];
                                 }
                             }
-                            const visual_name = visual_names[name_index];
+                            
+                            const display_name = if (nickname) |n| n else blk: {
+                                // Fallback to first 8 chars of pubkey if no nickname
+                                const author_hex = if (message.author) |author|
+                                    if (author.len > 8) author[0..8] else author
+                                else
+                                    "anon";
+                                break :blk author_hex;
+                            };
 
                             // Clear current line, print message, restore prompt
-                            std.debug.print("\r{s: <50}\r[{s}:{s}]: {s}\n> ", .{ " ", visual_name, author_hex, content });
+                            std.debug.print("\r{s: <50}\r[{s}]: {s}\n> ", .{ " ", display_name, content });
                         }
                     },
                     .EOSE => {
@@ -147,9 +161,10 @@ pub const InteractiveClient = struct {
         // Just send the raw content without username prefix
         const formatted_content = content;
 
-        // Create proper tags for geohash
+        // Create proper tags for geohash AND nickname
         const tags = [_][]const []const u8{
             &[_][]const u8{ "g", self.channel },
+            &[_][]const u8{ "n", self.username },  // Add nickname tag like bitchat does
         };
 
         // Create a proper Nostr event - use kind 20000 for ephemeral/channel messages
