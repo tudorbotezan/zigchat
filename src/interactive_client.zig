@@ -77,54 +77,64 @@ pub const InteractiveClient = struct {
 
     fn receiveLoop(self: *Self) void {
         while (self.running.load(.monotonic)) {
+            // Continuously try to receive messages with minimal delay
             const msg = self.client.receiveMessage() catch |err| {
                 if (self.running.load(.monotonic)) {
                     std.debug.print("\rError receiving: {}\n> ", .{err});
                 }
-                std.time.sleep(100_000_000); // 100ms
+                std.time.sleep(1_000_000); // 1ms on error
                 continue;
             };
 
-            if (msg) |message| {
-                defer message.deinit();
+            const message = msg orelse {
+                // Only sleep if no message available
+                std.time.sleep(1_000_000); // 1ms when no messages
+                continue;
+            };
+            defer message.deinit();
 
-                switch (message.type) {
-                    .EVENT => {
-                        if (message.content) |content| {
-                            // Try to extract nickname from tags
-                            var nickname: ?[]const u8 = null;
-                            if (message.tags) |tags| {
-                                if (tags.len >= 2 and std.mem.eql(u8, tags[0], "n")) {
+            switch (message.type) {
+                .EVENT => {
+                    if (message.content) |content| {
+                        // Try to extract nickname from tags
+                        var nickname: ?[]const u8 = null;
+                        if (message.tags) |tags| {
+                            if (tags.len >= 2 and std.mem.eql(u8, tags[0], "n")) {
+                                // Check if nickname is not empty
+                                if (tags[1].len > 0) {
                                     nickname = tags[1];
                                 }
                             }
-                            
-                            const display_name = if (nickname) |n| n else blk: {
-                                // Fallback to first 8 chars of pubkey if no nickname
-                                const author_hex = if (message.author) |author|
-                                    if (author.len > 8) author[0..8] else author
-                                else
-                                    "anon";
-                                break :blk author_hex;
-                            };
+                        }
+                        
+                        const display_name = if (nickname) |n| n else blk: {
+                            // Fallback to first 8 chars of pubkey if no nickname
+                            const author_hex = if (message.author) |author| blk2: {
+                                if (author.len >= 8) {
+                                    break :blk2 author[0..8];
+                                } else if (author.len > 0) {
+                                    break :blk2 author;
+                                } else {
+                                    break :blk2 "anon";
+                                }
+                            } else "anon";
+                            break :blk author_hex;
+                        };
 
-                            // Clear current line, print message, restore prompt
-                            std.debug.print("\r{s: <50}\r[{s}]: {s}\n> ", .{ " ", display_name, content });
-                        }
-                    },
-                    .EOSE => {
-                        std.debug.print("\r--- End of stored events ---\n> ", .{});
-                    },
-                    .NOTICE => {
-                        if (message.content) |content| {
-                            std.debug.print("\rNOTICE: {s}\n> ", .{content});
-                        }
-                    },
-                    else => {},
-                }
+                        // Clear current line, print message, restore prompt
+                        std.debug.print("\r{s: <50}\r[{s}]: {s}\n> ", .{ " ", display_name, content });
+                    }
+                },
+                .EOSE => {
+                    std.debug.print("\r--- End of stored events ---\n> ", .{});
+                },
+                .NOTICE => {
+                    if (message.content) |content| {
+                        std.debug.print("\rNOTICE: {s}\n> ", .{content});
+                    }
+                },
+                else => {},
             }
-
-            std.time.sleep(10_000_000); // 10ms
         }
     }
 

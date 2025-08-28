@@ -36,10 +36,11 @@ pub const NostrWsClient = struct {
     pub fn subscribeToChannel(self: *Self, channel: []const u8) !void {
         // Create REQ message for channel subscription
         // For geohash channels, subscribe to both kind 1 and 20000 with #g tag
-        // Format: ["REQ", "subscription_id", {"kinds": [1,20000], "#g": ["geohash"], "limit": 100}]
+        // Subscribe to more event kinds and remove limit to see all messages
+        // BitChat might use kind 42 for channel messages or other kinds
         var req_buffer: [512]u8 = undefined;
         const req = try std.fmt.bufPrint(&req_buffer,
-            \\["REQ","{s}",{{"kinds":[1,20000],"#g":["{s}"],"limit":100}}]
+            \\["REQ","{s}",{{"kinds":[1,42,20000,20001],"#g":["{s}"]}}]
         , .{ self.subscription_id, channel });
 
         if (self.is_tls) {
@@ -75,12 +76,14 @@ pub const NostrWsClient = struct {
         };
         defer self.allocator.free(raw_msg);
 
-        // Debug: log raw messages to see relay responses
-        if (std.mem.startsWith(u8, raw_msg, "[\"OK\"")) {
-            std.debug.print("\n[RELAY RAW]: {s}\n", .{raw_msg});
-        }
+        // Comment out debug logging for production
+        // std.debug.print("\n[RAW MESSAGE]: {s}\n", .{raw_msg});
 
-        return try parseNostrMessage(self.allocator, raw_msg);
+        return parseNostrMessage(self.allocator, raw_msg) catch |err| {
+            std.debug.print("\n[PARSE ERROR]: Failed to parse: {}\n", .{err});
+            std.debug.print("[FAILED MSG]: {s}\n", .{raw_msg});
+            return null;
+        };
     }
 
     pub fn close(self: *Self) void {
@@ -139,21 +142,27 @@ fn parseNostrMessage(allocator: std.mem.Allocator, json_str: []const u8) !NostrM
     if (std.mem.startsWith(u8, json_str, "[\"EVENT\"")) {
         msg_type = .EVENT;
 
-        // Extract content field
-        if (findJsonString(json_str, "\"content\":\"")) |content_start| {
-            const end = findStringEnd(json_str, content_start) orelse json_str.len;
-            content = try allocator.dupe(u8, json_str[content_start..end]);
+        // Extract content field (tolerate whitespace after colon)
+        if (findJsonStringValueStart(json_str, "content")) |val_start| {
+            if (val_start < json_str.len and json_str[val_start] == '"') {
+                const content_start = val_start + 1;
+                const end = findStringEnd(json_str, content_start) orelse json_str.len;
+                // Unescape the JSON string to handle escaped characters and unicode
+                content = try unescapeJsonString(allocator, json_str[content_start..end]);
+            }
         }
 
         // Extract pubkey (author)
-        if (findJsonString(json_str, "\"pubkey\":\"")) |pubkey_start| {
-            const end = findStringEnd(json_str, pubkey_start) orelse json_str.len;
-            author = try allocator.dupe(u8, json_str[pubkey_start..end]);
+        if (findJsonStringValueStart(json_str, "pubkey")) |val_start| {
+            if (val_start < json_str.len and json_str[val_start] == '"') {
+                const s = val_start + 1;
+                const e = findStringEnd(json_str, s) orelse json_str.len;
+                author = try allocator.dupe(u8, json_str[s..e]);
+            }
         }
 
         // Extract tags to find nickname
-        if (std.mem.indexOf(u8, json_str, "\"tags\":[")) |tags_pos| {
-            const tags_start = tags_pos + "\"tags\":[".len;
+        if (findJsonArrayStart(json_str, "tags")) |tags_start| {
             // Find the matching closing bracket
             var bracket_count: i32 = 1;
             var i = tags_start;
@@ -162,22 +171,33 @@ fn parseNostrMessage(allocator: std.mem.Allocator, json_str: []const u8) !NostrM
                 if (json_str[i] == ']') bracket_count -= 1;
             }
             
-            // Parse nickname tag if present
+            // Parse nickname tag if present - handle variations with/without spaces
             const tags_str = json_str[tags_start..i-1];
-            if (std.mem.indexOf(u8, tags_str, "[\"n\",\"")) |n_tag_pos| {
-                const nick_start = n_tag_pos + "[\"n\",\"".len;
+            // Try both with and without space after comma
+            var n_tag_pos: ?usize = std.mem.indexOf(u8, tags_str, "[\"n\",\"");
+            var prefix_len: usize = "[\"n\",\"".len;
+            
+            if (n_tag_pos == null) {
+                n_tag_pos = std.mem.indexOf(u8, tags_str, "[\"n\", \"");
+                prefix_len = "[\"n\", \"".len;
+            }
+            
+            if (n_tag_pos) |pos| {
+                const nick_start = pos + prefix_len;
                 if (std.mem.indexOf(u8, tags_str[nick_start..], "\"")) |nick_end| {
-                    var tag_list = try allocator.alloc([]const u8, 2);
-                    tag_list[0] = try allocator.dupe(u8, "n");
-                    tag_list[1] = try allocator.dupe(u8, tags_str[nick_start..nick_start + nick_end]);
-                    tags = tag_list;
+                    // Only create tag if nickname is not empty
+                    if (nick_end > 0) {
+                        var tag_list = try allocator.alloc([]const u8, 2);
+                        tag_list[0] = try allocator.dupe(u8, "n");
+                        tag_list[1] = try unescapeJsonString(allocator, tags_str[nick_start..nick_start + nick_end]);
+                        tags = tag_list;
+                    }
                 }
             }
         }
         
-        // Extract created_at
-        if (std.mem.indexOf(u8, json_str, "\"created_at\":")) |created_at_pos| {
-            const start = created_at_pos + "\"created_at\":".len;
+        // Extract created_at (tolerate whitespace after colon)
+        if (findJsonFieldValueStart(json_str, "created_at")) |start| {
             var end = start;
             while (end < json_str.len and (json_str[end] >= '0' and json_str[end] <= '9')) : (end += 1) {}
             if (end > start) {
@@ -216,20 +236,151 @@ fn findJsonString(json: []const u8, marker: []const u8) ?usize {
     return null;
 }
 
+// Finds the start index of a JSON value for a given string key, allowing whitespace around ':'
+fn findJsonStringValueStart(json: []const u8, key: []const u8) ?usize {
+    // Build the needle "key"
+    var buf: [128]u8 = undefined;
+    const n = std.fmt.bufPrint(&buf, "\"{s}\"", .{key}) catch return null;
+    const needle = buf[0..n.len];
+    var pos = std.mem.indexOf(u8, json, needle) orelse return null;
+    pos += needle.len;
+    // Skip optional whitespace
+    while (pos < json.len and (json[pos] == ' ' or json[pos] == '\n' or json[pos] == '\r' or json[pos] == '\t')) : (pos += 1) {}
+    if (pos >= json.len or json[pos] != ':') return null;
+    pos += 1;
+    while (pos < json.len and (json[pos] == ' ' or json[pos] == '\n' or json[pos] == '\r' or json[pos] == '\t')) : (pos += 1) {}
+    return if (pos < json.len) pos else null;
+}
+
+// For numeric fields; same behavior as above
+fn findJsonFieldValueStart(json: []const u8, key: []const u8) ?usize {
+    return findJsonStringValueStart(json, key);
+}
+
+// Finds the start (first element position) of an array value for a given key
+fn findJsonArrayStart(json: []const u8, key: []const u8) ?usize {
+    if (findJsonStringValueStart(json, key)) |pos| {
+        var i = pos;
+        while (i < json.len and (json[i] == ' ' or json[i] == '\n' or json[i] == '\r' or json[i] == '\t')) : (i += 1) {}
+        if (i < json.len and json[i] == '[') return i + 1;
+    }
+    return null;
+}
+
+fn unescapeJsonString(allocator: std.mem.Allocator, escaped: []const u8) ![]u8 {
+    var result = std.ArrayList(u8).init(allocator);
+    defer result.deinit();
+    
+    var i: usize = 0;
+    while (i < escaped.len) {
+        if (escaped[i] == '\\' and i + 1 < escaped.len) {
+            switch (escaped[i + 1]) {
+                'n' => try result.append('\n'),
+                'r' => try result.append('\r'),
+                't' => try result.append('\t'),
+                '"' => try result.append('"'),
+                '\\' => try result.append('\\'),
+                'u' => {
+                    // Handle Unicode escape sequences like \u0041 or \uD83D\uDE00 (emoji)
+                    if (i + 5 < escaped.len) {
+                        const hex_str = escaped[i + 2..i + 6];
+                        const codepoint = std.fmt.parseInt(u16, hex_str, 16) catch {
+                            // If parsing fails, just append the literal characters
+                            try result.append(escaped[i]);
+                            i += 1;
+                            continue;
+                        };
+                        
+                        // Check for surrogate pair (for emojis and other chars > U+FFFF)
+                        if (codepoint >= 0xD800 and codepoint <= 0xDBFF and i + 11 < escaped.len) {
+                            if (escaped[i + 6] == '\\' and escaped[i + 7] == 'u') {
+                                const low_hex = escaped[i + 8..i + 12];
+                                const low = std.fmt.parseInt(u16, low_hex, 16) catch {
+                                    // Not a valid surrogate pair, encode the high surrogate alone
+                                    try encodeUtf8(&result, codepoint);
+                                    i += 6;
+                                    continue;
+                                };
+                                
+                                // Decode surrogate pair to full codepoint
+                                const high = codepoint;
+                                const full_codepoint = @as(u21, (high - 0xD800)) * 0x400 + (low - 0xDC00) + 0x10000;
+                                try encodeUtf8(&result, full_codepoint);
+                                i += 12;
+                                continue;
+                            }
+                        }
+                        
+                        try encodeUtf8(&result, codepoint);
+                        i += 6;
+                    } else {
+                        try result.append(escaped[i]);
+                        i += 1;
+                    }
+                },
+                else => {
+                    // Unknown escape sequence, keep the backslash
+                    try result.append(escaped[i]);
+                    i += 1;
+                },
+            }
+            if (escaped[i + 1] != 'u') {
+                i += 2;
+            }
+        } else {
+            try result.append(escaped[i]);
+            i += 1;
+        }
+    }
+    
+    return result.toOwnedSlice();
+}
+
+fn encodeUtf8(result: *std.ArrayList(u8), codepoint: u21) !void {
+    if (codepoint <= 0x7F) {
+        try result.append(@intCast(codepoint));
+    } else if (codepoint <= 0x7FF) {
+        try result.append(@intCast(0xC0 | (codepoint >> 6)));
+        try result.append(@intCast(0x80 | (codepoint & 0x3F)));
+    } else if (codepoint <= 0xFFFF) {
+        try result.append(@intCast(0xE0 | (codepoint >> 12)));
+        try result.append(@intCast(0x80 | ((codepoint >> 6) & 0x3F)));
+        try result.append(@intCast(0x80 | (codepoint & 0x3F)));
+    } else {
+        try result.append(@intCast(0xF0 | (codepoint >> 18)));
+        try result.append(@intCast(0x80 | ((codepoint >> 12) & 0x3F)));
+        try result.append(@intCast(0x80 | ((codepoint >> 6) & 0x3F)));
+        try result.append(@intCast(0x80 | (codepoint & 0x3F)));
+    }
+}
+
 fn findStringEnd(json: []const u8, start: usize) ?usize {
     var i = start;
     var escaped = false;
-    while (i < json.len) : (i += 1) {
+    while (i < json.len) {
         if (escaped) {
             escaped = false;
+            i += 1;
             continue;
         }
         if (json[i] == '\\') {
             escaped = true;
+            i += 1;
             continue;
         }
         if (json[i] == '"') {
             return i;
+        }
+        // Handle UTF-8 multi-byte characters including emojis
+        const byte = json[i];
+        if (byte < 0x80) {
+            i += 1;
+        } else if (byte < 0xE0) {
+            i += 2;
+        } else if (byte < 0xF0) {
+            i += 3;
+        } else {
+            i += 4;
         }
     }
     return null;
