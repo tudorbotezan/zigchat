@@ -1,21 +1,17 @@
 const std = @import("std");
 const crypto = std.crypto;
-
-// For now, we'll use a simplified approach that at least generates proper format
-// In production, you'd want to use a proper secp256k1 library like Zabi
+const secp = @import("secp256k1.zig");
 
 pub const KeyPair = struct {
     private_key: [32]u8,
     public_key: [32]u8,
     
-    pub fn generate() KeyPair {
-        var private_key: [32]u8 = undefined;
-        crypto.random.bytes(&private_key);
+    pub fn generate() !KeyPair {
+        var ctx = try secp.Secp256k1.init();
+        defer ctx.deinit();
         
-        // For demo: derive a deterministic "public key" from private
-        // Real implementation needs proper secp256k1 scalar multiplication
-        var public_key: [32]u8 = undefined;
-        crypto.hash.sha2.Sha256.hash(&private_key, &public_key, .{});
+        const private_key = try ctx.generateKeypair();
+        const public_key = try ctx.getPublicKey(private_key);
         
         return .{
             .private_key = private_key,
@@ -27,8 +23,10 @@ pub const KeyPair = struct {
         var private_key: [32]u8 = undefined;
         _ = try std.fmt.hexToBytes(&private_key, private_key_hex);
         
-        var public_key: [32]u8 = undefined;
-        crypto.hash.sha2.Sha256.hash(&private_key, &public_key, .{});
+        var ctx = try secp.Secp256k1.init();
+        defer ctx.deinit();
+        
+        const public_key = try ctx.getPublicKey(private_key);
         
         return .{
             .private_key = private_key,
@@ -117,33 +115,11 @@ pub fn computeEventId(serialized: []const u8) [32]u8 {
     return hash;
 }
 
-// Simplified "signing" for demo - generates deterministic but not cryptographically valid signature
-// Real implementation needs proper Schnorr BIP-340
-pub fn signEvent(event_id: [32]u8, private_key: [32]u8) [64]u8 {
-    var sig: [64]u8 = undefined;
+pub fn signEvent(event_id: [32]u8, private_key: [32]u8) ![64]u8 {
+    var ctx = try secp.Secp256k1.init();
+    defer ctx.deinit();
     
-    // For demo: concatenate hashes to create a deterministic 64-byte value
-    // Real implementation needs proper Schnorr signing
-    var hasher = crypto.hash.sha2.Sha256.init(.{});
-    hasher.update(&event_id);
-    hasher.update(&private_key);
-    hasher.update("nostr_sign"); // Add domain separator
-    
-    var hash1: [32]u8 = undefined;
-    hasher.final(&hash1);
-    
-    hasher = crypto.hash.sha2.Sha256.init(.{});
-    hasher.update(&hash1);
-    hasher.update(&private_key);
-    hasher.update("nostr_sig2");
-    
-    var hash2: [32]u8 = undefined;
-    hasher.final(&hash2);
-    
-    @memcpy(sig[0..32], &hash1);
-    @memcpy(sig[32..64], &hash2);
-    
-    return sig;
+    return try ctx.signSchnorr(event_id, private_key);
 }
 
 pub const NostrEvent = struct {
@@ -178,7 +154,7 @@ pub const NostrEvent = struct {
         _ = try std.fmt.bufPrint(&id_hex, "{}", .{std.fmt.fmtSliceHexLower(&event_id)});
         
         // Sign the event
-        const signature = signEvent(event_id, keypair.private_key);
+        const signature = try signEvent(event_id, keypair.private_key);
         var sig_hex: [128]u8 = undefined;
         _ = try std.fmt.bufPrint(&sig_hex, "{}", .{std.fmt.fmtSliceHexLower(&signature)});
         
