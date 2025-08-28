@@ -73,11 +73,12 @@ pub const NostrWsClient = struct {
     }
 
     pub fn subscribeToChannelSmart(self: *Self, channel: []const u8, debug_mode: bool) !void {
-        // Smart subscription: ALL event kinds with #g geotag, limit for initial history
+        // BitChat-compatible subscription: kinds [1, 20000] with #g geotag
+        // kind 1 = text notes (stored), kind 20000 = ephemeral location stream
         var req_buffer: [512]u8 = undefined;
         const req = try std.fmt.bufPrint(&req_buffer,
-            \\["REQ","geo",{{"#g":["{s}"],"limit":50}}]
-        , .{ channel });
+            \\["REQ","geo-{s}-live",{{"kinds":[1,20000],"#g":["{s}"],"limit":200}}]
+        , .{ channel, channel });
 
         if (self.is_tls) {
             try self.tls_client.?.sendText(req);
@@ -85,7 +86,7 @@ pub const NostrWsClient = struct {
             try self.ws_client.?.sendText(req);
         }
         if (debug_mode) {
-            std.debug.print("[{s}] Subscribed to ALL event kinds with #g geotag: {s}\n", .{ self.url, channel });
+            std.debug.print("[{s}] Subscribed to kinds [1,20000] with #g geotag: {s}\n", .{ self.url, channel });
         }
     }
 
@@ -205,6 +206,15 @@ fn parseNostrMessage(allocator: std.mem.Allocator, json_str: []const u8) !NostrM
             }
         }
 
+        // Extract event ID for deduplication
+        if (findJsonStringValueStart(json_str, "id")) |val_start| {
+            if (val_start < json_str.len and json_str[val_start] == '"') {
+                const s = val_start + 1;
+                const e = findStringEnd(json_str, s) orelse json_str.len;
+                event_id = try allocator.dupe(u8, json_str[s..e]);
+            }
+        }
+
         // Extract pubkey (author)
         if (findJsonStringValueStart(json_str, "pubkey")) |val_start| {
             if (val_start < json_str.len and json_str[val_start] == '"') {
@@ -319,12 +329,16 @@ fn parseNostrMessage(allocator: std.mem.Allocator, json_str: []const u8) !NostrM
         }
     }
 
+    // Duplicate event_id if we have one since we use it for both fields
+    const id_copy = if (event_id) |eid| try allocator.dupe(u8, eid) else null;
+    
     return NostrMessage{
         .type = msg_type,
         .content = content,
         .author = author,
         .created_at = created_at,
-        .event_id = event_id,
+        .id = event_id,  // Use original for 'id' field
+        .event_id = id_copy,  // Use copy for 'event_id' field
         .ok_status = ok_status,
         .tags = tags,
         .kind = kind,

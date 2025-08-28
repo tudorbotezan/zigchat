@@ -95,6 +95,10 @@ pub const TlsWebSocketClient = struct {
                 self.tcp_stream = null;
             }
         }
+        
+        // Set socket to non-blocking mode for better message streaming
+        const sock_flags = try std.posix.fcntl(self.tcp_stream.?.handle, std.posix.F.GETFL, 0);
+        _ = try std.posix.fcntl(self.tcp_stream.?.handle, std.posix.F.SETFL, sock_flags | std.posix.O.NONBLOCK);
 
         // Create TLS client
         self.tls_client = try self.allocator.create(tls.Client);
@@ -157,6 +161,7 @@ pub const TlsWebSocketClient = struct {
             return error.NotConnected;
         }
 
+        // Try to receive with non-blocking behavior
         if (self.ws_stream.?.nextMessage()) |msg| {
             defer msg.deinit();
 
@@ -164,10 +169,19 @@ pub const TlsWebSocketClient = struct {
                 const text_copy = try self.allocator.dupe(u8, msg.payload);
                 return text_copy;
             }
+        } else |err| {
+            // Handle non-blocking socket errors
+            if (err == error.WouldBlock or err == error.Again) {
+                return null; // No data available right now
+            }
+            return err; // Real error
         }
 
         if (self.ws_stream.?.err) |err| {
-            std.debug.print("WebSocket error: {}\n", .{err});
+            // Don't print WouldBlock errors - they're expected in non-blocking mode
+            if (err != error.WouldBlock and err != error.Again) {
+                std.debug.print("WebSocket error: {}\n", .{err});
+            }
             return err;
         }
 

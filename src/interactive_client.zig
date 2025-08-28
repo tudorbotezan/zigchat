@@ -1,16 +1,21 @@
 const std = @import("std");
 const NostrWsClient = @import("nostr_ws_client.zig").NostrWsClient;
 const nostr_crypto = @import("nostr_crypto.zig");
+const MessageQueue = @import("message_queue.zig").MessageQueue;
 
 pub const InteractiveClient = struct {
     allocator: std.mem.Allocator,
     relays: std.ArrayList(NostrWsClient),
+    relay_threads: std.ArrayList(std.Thread),
+    message_queue: MessageQueue,
     channel: []const u8,
     running: std.atomic.Value(bool),
     keypair: nostr_crypto.KeyPair,
     username: []const u8,
     last_sent_ids: [2][64]u8 = undefined,
     debug_mode: bool = false,
+    seen_events: std.hash_map.StringHashMap(void), // Track seen event IDs for deduplication
+    seen_mutex: std.Thread.Mutex,
 
     const Self = @This();
 
@@ -165,12 +170,16 @@ pub const InteractiveClient = struct {
         var client = Self{
             .allocator = allocator,
             .relays = relays,
+            .relay_threads = std.ArrayList(std.Thread).init(allocator),
+            .message_queue = MessageQueue.init(allocator),
             .channel = channel,
             .running = std.atomic.Value(bool).init(true),
             .keypair = keypair,
             .username = username,
             .last_sent_ids = undefined,
             .debug_mode = debug_mode,
+            .seen_events = std.hash_map.StringHashMap(void).init(allocator),
+            .seen_mutex = .{},
         };
         
         // Initialize last_sent_ids
@@ -234,6 +243,19 @@ pub const InteractiveClient = struct {
             switch (message.type) {
                 .EVENT => {
                     if (message.content) |content| {
+                        // Deduplicate: check if we've seen this event ID before
+                        if (message.id) |event_id| {
+                            // Check if already seen
+                            if (self.seen_events.contains(event_id)) {
+                                if (self.debug_mode) {
+                                    std.debug.print("[DEDUP] Skipping duplicate event: {s}\n", .{event_id});
+                                }
+                                continue; // Skip duplicate
+                            }
+                            // Mark as seen
+                            const id_copy = self.allocator.dupe(u8, event_id) catch continue;
+                            self.seen_events.put(id_copy, {}) catch {};
+                        }
                         // Check if this is our own event coming back
                         var is_our_echo = false;
                         if (message.id) |msg_id| {
@@ -443,26 +465,20 @@ pub const InteractiveClient = struct {
             &[_][]const u8{ "n", self.username },
         };
 
-        // Create both kind 20000 and kind 1 events
-        var event_kind20000 = try nostr_crypto.NostrEvent.create(self.keypair, 20000, &tags, content, self.allocator);
-        var event_kind1 = try nostr_crypto.NostrEvent.create(self.keypair, 1, &tags, content, self.allocator);
+        // Create only kind 20000 (ephemeral) event for chat messages
+        var event = try nostr_crypto.NostrEvent.create(self.keypair, 20000, &tags, content, self.allocator);
 
-        // Convert events to JSON
-        const event20000_json = try event_kind20000.toJson(self.allocator);
-        defer self.allocator.free(event20000_json);
-        const event1_json = try event_kind1.toJson(self.allocator);
-        defer self.allocator.free(event1_json);
+        // Convert event to JSON
+        const event_json = try event.toJson(self.allocator);
+        defer self.allocator.free(event_json);
 
-        // Create EVENT commands
-        var command20000_buffer: [4096]u8 = undefined;
-        const command20000 = try std.fmt.bufPrint(&command20000_buffer, "[\"EVENT\",{s}]", .{event20000_json});
-        var command1_buffer: [4096]u8 = undefined;
-        const command1 = try std.fmt.bufPrint(&command1_buffer, "[\"EVENT\",{s}]", .{event1_json});
+        // Create EVENT command
+        var command_buffer: [4096]u8 = undefined;
+        const command = try std.fmt.bufPrint(&command_buffer, "[\"EVENT\",{s}]", .{event_json});
 
         if (self.debug_mode) {
-            std.debug.print("\n[DUAL-POST] Sending to {} relays...\n", .{self.relays.items.len});
-            std.debug.print("Sending: {s}\n", .{command20000});
-            std.debug.print("Sending: {s}\n", .{command1});
+            std.debug.print("\n[EPHEMERAL] Sending kind 20000 to {} relays...\n", .{self.relays.items.len});
+            std.debug.print("Sending: {s}\n", .{command});
         }
 
         // Send both events to all relays in parallel
@@ -476,54 +492,37 @@ pub const InteractiveClient = struct {
                 continue;
             }
             
-            // Send kind 20000
+            // Send ephemeral message (kind 20000)
             if (relay.is_tls) {
-                relay.tls_client.?.sendText(command20000) catch |err| {
+                relay.tls_client.?.sendText(command) catch |err| {
                     if (self.debug_mode) {
-                        std.debug.print("[{s}] ❌ Failed kind 20000: {}\n", .{ relay.url, err });
+                        std.debug.print("[{s}] ❌ Failed to send: {}\n", .{ relay.url, err });
                     }
                     continue;
                 };
             } else {
-                relay.ws_client.?.sendText(command20000) catch |err| {
+                relay.ws_client.?.sendText(command) catch |err| {
                     if (self.debug_mode) {
-                        std.debug.print("[{s}] ❌ Failed kind 20000: {}\n", .{ relay.url, err });
-                    }
-                    continue;
-                };
-            }
-            
-            // Send kind 1
-            if (relay.is_tls) {
-                relay.tls_client.?.sendText(command1) catch |err| {
-                    if (self.debug_mode) {
-                        std.debug.print("[{s}] ❌ Failed kind 1: {}\n", .{ relay.url, err });
-                    }
-                    continue;
-                };
-            } else {
-                relay.ws_client.?.sendText(command1) catch |err| {
-                    if (self.debug_mode) {
-                        std.debug.print("[{s}] ❌ Failed kind 1: {}\n", .{ relay.url, err });
+                        std.debug.print("[{s}] ❌ Failed to send: {}\n", .{ relay.url, err });
                     }
                     continue;
                 };
             }
             
             if (self.debug_mode) {
-                std.debug.print("[{s}] ✓ Sent both kinds\n", .{relay.url});
+                std.debug.print("[{s}] ✓ Sent ephemeral message\n", .{relay.url});
             }
             sent_count += 1;
         }
         
         if (self.debug_mode) {
-            std.debug.print("\n📤 Published to {}/{} relays\n", .{ sent_count, self.relays.items.len });
-            std.debug.print("Event IDs: kind20000={s}, kind1={s}\n", .{ event_kind20000.id, event_kind1.id });
+            std.debug.print("\n📤 Published ephemeral message to {}/{} relays\n", .{ sent_count, self.relays.items.len });
+            std.debug.print("Event ID: {s}\n", .{ event.id });
         }
         
-        // Store our event IDs to track when they come back
-        self.last_sent_ids[0] = event_kind20000.id;
-        self.last_sent_ids[1] = event_kind1.id;
+        // Store our event ID to track when it comes back
+        self.last_sent_ids[0] = event.id;
+        @memset(&self.last_sent_ids[1], 0); // Clear second ID since we only send one event now
     }
 
     pub fn deinit(self: *Self) void {
@@ -531,6 +530,13 @@ pub const InteractiveClient = struct {
         if (!std.mem.eql(u8, self.username, "anon")) {
             self.allocator.free(self.username);
         }
+        
+        // Clean up seen events map
+        var iter = self.seen_events.iterator();
+        while (iter.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.seen_events.deinit();
         
         // Clean up all relay clients
         for (self.relays.items) |*relay| {

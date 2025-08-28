@@ -40,6 +40,10 @@ pub const WebSocketClient = struct {
         // Connect TCP
         self.tcp_client = try net.tcpConnectToHost(self.allocator, host, port);
         errdefer if (self.tcp_client) |tcp| tcp.close();
+        
+        // Set socket to non-blocking mode for better message streaming
+        const sock_flags = try std.posix.fcntl(self.tcp_client.?.handle, std.posix.F.GETFL, 0);
+        _ = try std.posix.fcntl(self.tcp_client.?.handle, std.posix.F.SETFL, sock_flags | std.posix.O.NONBLOCK);
 
         const is_tls = std.mem.eql(u8, uri.scheme, "wss");
 
@@ -81,6 +85,7 @@ pub const WebSocketClient = struct {
             return error.NotConnected;
         }
 
+        // Try to receive with non-blocking behavior
         if (self.ws_stream.?.nextMessage()) |msg| {
             defer msg.deinit();
 
@@ -88,10 +93,19 @@ pub const WebSocketClient = struct {
                 const text_copy = try self.allocator.dupe(u8, msg.payload);
                 return text_copy;
             }
+        } else |err| {
+            // Handle non-blocking socket errors
+            if (err == error.WouldBlock or err == error.Again) {
+                return null; // No data available right now
+            }
+            return err; // Real error
         }
 
         if (self.ws_stream.?.err) |err| {
-            std.debug.print("WebSocket error: {}\n", .{err});
+            // Don't print WouldBlock errors - they're expected in non-blocking mode
+            if (err != error.WouldBlock and err != error.Again) {
+                std.debug.print("WebSocket error: {}\n", .{err});
+            }
             return err;
         }
 
