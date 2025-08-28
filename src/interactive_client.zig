@@ -43,39 +43,104 @@ pub const InteractiveClient = struct {
         std.debug.print("Generated keypair for this session\n", .{});
         std.debug.print("Public key: {s}\n", .{std.fmt.fmtSliceHexLower(&keypair.public_key)});
 
-        // Load relays from file or use defaults
+        // Load geohash-specific relays
         var relays = std.ArrayList(NostrWsClient).init(allocator);
         
-        // Try to read relays from file
-        const relay_file = std.fs.cwd().openFile("assets/default-relays.txt", .{}) catch null;
-        if (relay_file) |file| {
+        // First, try to load geohash-specific relays
+        const geohash_relay_file = std.fs.cwd().openFile("assets/geohash-relays.json", .{}) catch null;
+        var loaded_from_geohash = false;
+        
+        if (geohash_relay_file) |file| {
             defer file.close();
             const content = file.readToEndAlloc(allocator, 1024 * 1024) catch null;
             if (content) |data| {
                 defer allocator.free(data);
-                var lines = std.mem.tokenizeAny(u8, data, "\n\r");
-                var count: usize = 0;
-                while (lines.next()) |line| {
-                    const trimmed = std.mem.trim(u8, line, " \t");
-                    if (trimmed.len > 0 and count < 5) { // Use first 5 relays
-                        relays.append(NostrWsClient.init(allocator, allocator.dupe(u8, trimmed) catch trimmed)) catch continue;
-                        count += 1;
+                
+                // Simple JSON parsing for geohash relay mapping
+                // Look for exact match first (e.g., "9q")
+                const search_key = std.fmt.allocPrint(allocator, "\"{s}\":", .{channel}) catch null;
+                if (search_key) |key| {
+                    defer allocator.free(key);
+                    if (std.mem.indexOf(u8, data, key)) |start_idx| {
+                        // Found exact geohash match, extract relay URLs
+                        if (std.mem.indexOf(u8, data[start_idx..], "[")) |bracket_start| {
+                            const abs_start = start_idx + bracket_start;
+                            if (std.mem.indexOf(u8, data[abs_start..], "]")) |bracket_end| {
+                                const relay_array = data[abs_start + 1 .. abs_start + bracket_end];
+                                var relay_iter = std.mem.tokenizeAny(u8, relay_array, ",");
+                                while (relay_iter.next()) |relay_entry| {
+                                    // Extract URL from quoted string
+                                    var trimmed = std.mem.trim(u8, relay_entry, " \t\n\r");
+                                    if (trimmed.len > 2 and trimmed[0] == '"' and trimmed[trimmed.len - 1] == '"') {
+                                        const url = trimmed[1 .. trimmed.len - 1];
+                                        relays.append(NostrWsClient.init(allocator, allocator.dupe(u8, url) catch url)) catch continue;
+                                        loaded_from_geohash = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // If no exact match, try prefix match (e.g., "9" for "9q")
+                if (!loaded_from_geohash and channel.len > 0) {
+                    const prefix_key = std.fmt.allocPrint(allocator, "\"{c}\":", .{channel[0]}) catch null;
+                    if (prefix_key) |key| {
+                        defer allocator.free(key);
+                        if (std.mem.indexOf(u8, data, key)) |start_idx| {
+                            if (std.mem.indexOf(u8, data[start_idx..], "[")) |bracket_start| {
+                                const abs_start = start_idx + bracket_start;
+                                if (std.mem.indexOf(u8, data[abs_start..], "]")) |bracket_end| {
+                                    const relay_array = data[abs_start + 1 .. abs_start + bracket_end];
+                                    var relay_iter = std.mem.tokenizeAny(u8, relay_array, ",");
+                                    while (relay_iter.next()) |relay_entry| {
+                                        var trimmed = std.mem.trim(u8, relay_entry, " \t\n\r");
+                                        if (trimmed.len > 2 and trimmed[0] == '"' and trimmed[trimmed.len - 1] == '"') {
+                                            const url = trimmed[1 .. trimmed.len - 1];
+                                            relays.append(NostrWsClient.init(allocator, allocator.dupe(u8, url) catch url)) catch continue;
+                                            loaded_from_geohash = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
         
-        // If no relays loaded, use defaults
+        // If no geohash-specific relays found, fall back to default relays
+        if (!loaded_from_geohash) {
+            const relay_file = std.fs.cwd().openFile("assets/default-relays.txt", .{}) catch null;
+            if (relay_file) |file| {
+                defer file.close();
+                const content = file.readToEndAlloc(allocator, 1024 * 1024) catch null;
+                if (content) |data| {
+                    defer allocator.free(data);
+                    var lines = std.mem.tokenizeAny(u8, data, "\n\r");
+                    var count: usize = 0;
+                    while (lines.next()) |line| {
+                        const trimmed = std.mem.trim(u8, line, " \t");
+                        if (trimmed.len > 0 and count < 5) { // Use first 5 relays
+                            relays.append(NostrWsClient.init(allocator, allocator.dupe(u8, trimmed) catch trimmed)) catch continue;
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // If still no relays loaded, use hardcoded defaults
         if (relays.items.len == 0) {
             // Always add primary relay
             relays.append(NostrWsClient.init(allocator, primary_relay)) catch {};
             
             // Add some default relays
             const default_relays = [_][]const u8{
-                "wss://nos.lol",
-                "wss://relay.nostr.band",
+                "wss://relay.wellorder.net",
+                "wss://nostr-pub.wellorder.net",
                 "wss://relay.damus.io",
-                "wss://nostr.wine",
+                "wss://nos.lol",
             };
             
             for (default_relays) |relay| {
@@ -85,7 +150,11 @@ pub const InteractiveClient = struct {
             }
         }
         
-        std.debug.print("Loaded {} relays\n", .{relays.items.len});
+        if (loaded_from_geohash) {
+            std.debug.print("Loaded {} geohash-specific relays for '{s}'\n", .{ relays.items.len, channel });
+        } else {
+            std.debug.print("Loaded {} default relays\n", .{relays.items.len});
+        }
         
         var client = Self{
             .allocator = allocator,
@@ -112,7 +181,7 @@ pub const InteractiveClient = struct {
                 continue;
             };
             
-            // Subscribe to kind 20000 messages with #q geotag
+            // Subscribe to both kind 1 and 20000 messages with #g geotag
             relay.subscribeToChannelSmart(self.channel) catch |err| {
                 std.debug.print("Warning: Could not subscribe on relay {s}: {}\n", .{ relay.url, err });
             };
@@ -332,21 +401,26 @@ pub const InteractiveClient = struct {
     }
 
     fn sendMessage(self: *Self, content: []const u8) !void {
-        // Create proper tags for geohash with #q tag
+        // Create proper tags for geohash with #g tag
         const tags = [_][]const []const u8{
-            &[_][]const u8{ "q", self.channel },
+            &[_][]const u8{ "g", self.channel },
         };
 
-        // Create kind 20000 event only
+        // Create both kind 20000 and kind 1 events
         var event_kind20000 = try nostr_crypto.NostrEvent.create(self.keypair, 20000, &tags, content, self.allocator);
+        var event_kind1 = try nostr_crypto.NostrEvent.create(self.keypair, 1, &tags, content, self.allocator);
 
-        // Convert event to JSON
+        // Convert events to JSON
         const event20000_json = try event_kind20000.toJson(self.allocator);
         defer self.allocator.free(event20000_json);
+        const event1_json = try event_kind1.toJson(self.allocator);
+        defer self.allocator.free(event1_json);
 
-        // Create EVENT command for kind 20000
+        // Create EVENT commands
         var command20000_buffer: [4096]u8 = undefined;
         const command20000 = try std.fmt.bufPrint(&command20000_buffer, "[\"EVENT\",{s}]", .{event20000_json});
+        var command1_buffer: [4096]u8 = undefined;
+        const command1 = try std.fmt.bufPrint(&command1_buffer, "[\"EVENT\",{s}]", .{event1_json});
 
         std.debug.print("\n[DUAL-POST] Sending to {} relays...\n", .{self.relays.items.len});
 

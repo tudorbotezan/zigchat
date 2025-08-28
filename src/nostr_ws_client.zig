@@ -69,10 +69,10 @@ pub const NostrWsClient = struct {
     }
 
     pub fn subscribeToChannelSmart(self: *Self, channel: []const u8) !void {
-        // Smart subscription: only kind 20000 with #q geotag, limit for initial history
+        // Smart subscription: both kind 1 and 20000 with #g geotag, limit for initial history
         var req_buffer: [512]u8 = undefined;
         const req = try std.fmt.bufPrint(&req_buffer,
-            \\["REQ","geo",{{"kinds":[20000],"#q":["{s}"],"limit":50}}]
+            \\["REQ","geo",{{"kinds":[1,20000],"#g":["{s}"],"limit":50}}]
         , .{ channel });
 
         if (self.is_tls) {
@@ -80,7 +80,7 @@ pub const NostrWsClient = struct {
         } else {
             try self.ws_client.?.sendText(req);
         }
-        std.debug.print("[{s}] Subscribed to kind 20000 with #q geotag: {s}\n", .{ self.url, channel });
+        std.debug.print("[{s}] Subscribed to kinds [1,20000] with #g geotag: {s}\n", .{ self.url, channel });
     }
 
     pub fn subscribeToGlobal(self: *Self) !void {
