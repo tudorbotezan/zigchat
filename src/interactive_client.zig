@@ -401,9 +401,10 @@ pub const InteractiveClient = struct {
     }
 
     fn sendMessage(self: *Self, content: []const u8) !void {
-        // Create proper tags for geohash with #g tag
+        // Create proper tags for geohash with #g tag and nickname
         const tags = [_][]const []const u8{
             &[_][]const u8{ "g", self.channel },
+            &[_][]const u8{ "n", self.username },
         };
 
         // Create both kind 20000 and kind 1 events
