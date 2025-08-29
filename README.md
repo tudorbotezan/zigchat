@@ -1,154 +1,141 @@
 # Zigchat - Minimal Nostr Client in Zig
 
-A tiny terminal client for Nostr protocol, targeting sub-2MB static binary that runs on macOS, Linux, and Windows.
+A lightweight terminal-based Nostr client written in Zig. Connect to geohash-based local channels and chat in real-time.
 
 ## Features
 
-- **Minimal footprint**: Sub-2MB static binary
-- **Cross-platform**: Works on macOS, Linux, and Windows  
-- **Pure Zig**: Direct control over WebSocket, JSON, and crypto
-- **NIP Support**: 
-  - NIP-01: Basic protocol flow
-  - NIP-11: Relay information document
-  - NIP-42: Authentication
-  - NIP-17: Direct messages (planned)
+- 🚀 **Fast & Minimal**: Sub-2MB binary
+- 🌍 **Geohash Channels**: Location-based chat rooms (e.g., "9q" for Central California)
+- 💬 **Real-time Messaging**: WebSocket connections to Nostr relays
+- 🔐 **Cryptographically Secure**: secp256k1 signatures for all messages
+- 🖥️ **Cross-platform**: macOS, Linux, Windows support
 
-## Building
+## Quick Start
 
-Requirements:
+```bash
+# Build
+zig build
+
+# Connect to Central California channel
+./connect.sh
+
+# Or specify custom channel and relay
+./connect.sh 9q wss://relay.damus.io
+```
+
+## Installation
+
+### Prerequisites
+
 - Zig 0.13.0 or later
-- libsecp256k1 (with Schnorr support enabled)
+- libsecp256k1 (with Schnorr support)
 
-### Building for your platform
+### Install secp256k1
+
+**macOS:**
+```bash
+brew install secp256k1
+```
+
+**Linux:**
+```bash
+sudo apt-get install libsecp256k1-dev  # Debian/Ubuntu
+sudo yum install libsecp256k1-devel    # RHEL/Fedora
+```
+
+**Windows:**
+Download and install from [bitcoin-core/secp256k1](https://github.com/bitcoin-core/secp256k1)
+
+### Build from Source
 
 ```bash
-# Build for your current platform (native)
+git clone https://github.com/tudorbotezan/zigchat.git
+cd zigchat
 zig build -Doptimize=ReleaseSafe
-
-# Run
-./zig-out/bin/zigchat
 ```
-
-### Cross-compilation
-
-The build system automatically detects the target OS and adjusts library paths accordingly:
-
-```bash
-# Build for Linux (from macOS or Windows)
-zig build -Dtarget=x86_64-linux -Doptimize=ReleaseSafe
-
-# Build for Windows (from macOS or Linux)
-zig build -Dtarget=x86_64-windows -Doptimize=ReleaseSafe
-
-# Build for macOS (from Linux or Windows)
-zig build -Dtarget=x86_64-macos -Doptimize=ReleaseSafe
-
-# Build for ARM64 Linux (e.g., Raspberry Pi)
-zig build -Dtarget=aarch64-linux -Doptimize=ReleaseSafe
-```
-
-### Library paths by platform
-
-The build system expects secp256k1 to be installed in these locations:
-- **macOS**: `/opt/homebrew` (Homebrew default)
-- **Linux**: `/usr/include` and `/usr/lib` (system packages)
-- **Windows**: `C:/secp256k1` (manual installation)
-
-If your libraries are in different locations, you'll need to modify the paths in `build.zig`.
 
 ## Usage
 
 ```bash
-# Generate new keypair
-zigchat keygen
+# Connect to Central California channel (default)
+./connect.sh
 
-# Show current identity  
-zigchat whoami
+# Connect to a different geohash channel
+./connect.sh 9q8              # San Francisco Bay Area
+./connect.sh 9q5              # Los Angeles Area
+./connect.sh dr5              # New York City
 
-# Manage relays
-zigchat relay add wss://relay.example.com
-zigchat relay ls
-zigchat relay rm 0
-
-# Publish a note
-zigchat pub "Hello, Nostr!"
-
-# Subscribe to notes
-zigchat sub --kinds 1 --limit 50
-
-# Test authentication
-zigchat auth test
+# Connect to a specific relay
+./connect.sh 9q wss://nos.lol
 ```
 
-## Configuration
+### Chat Commands
 
-Config is stored at `~/.config/zigchat/config.json`:
+Once connected:
+- Type any message and press Enter to send
+- `/users` - Show active users in the channel
+- `/quit` - Exit the chat
 
-```json
-{
-  "keys": {
-    "sk_hex": "...",
-    "pk_hex": "..."
-  },
-  "relays": [
-    {
-      "url": "wss://relay.example",
-      "read": true,
-      "write": true
-    }
-  ],
-  "prefs": {
-    "timeout_ms": 8000,
-    "max_inflight": 2
-  }
-}
+## Geohash Channels
+
+Zigchat uses geohash prefixes for location-based channels:
+
+- `9q` - Central California
+- `9q8` - San Francisco Bay Area  
+- `9q5` - Los Angeles Area
+- `dr5` - New York City
+- `u4p` - London
+- `wt` - Tokyo
+
+Shorter prefixes cover larger areas. Find your geohash at [geohash.org](http://geohash.org/).
+
+## Cross-Compilation
+
+Build for different platforms:
+
+```bash
+# Linux
+zig build -Dtarget=x86_64-linux -Doptimize=ReleaseSafe
+
+# Windows  
+zig build -Dtarget=x86_64-windows -Doptimize=ReleaseSafe
+
+# macOS
+zig build -Dtarget=x86_64-macos -Doptimize=ReleaseSafe
+
+# ARM64 (Raspberry Pi)
+zig build -Dtarget=aarch64-linux -Doptimize=ReleaseSafe
 ```
 
 ## Project Structure
 
 ```
 zigchat/
-├─ build.zig           # Build configuration
-├─ build.zig.zon       # Package manifest
-├─ src/
-│  ├─ main.zig         # CLI entry point
-│  ├─ nostr/           # Protocol implementation
-│  │  ├─ ws.zig        # WebSocket client
-│  │  ├─ json.zig      # JSON serialization
-│  │  ├─ event.zig     # Event structures
-│  │  ├─ sign.zig      # BIP-340 Schnorr signatures
-│  │  ├─ nip11.zig     # Relay metadata
-│  │  ├─ nip42.zig     # Authentication
-│  │  └─ client.zig    # Relay pool management
-│  ├─ store/           # Persistence
-│  │  ├─ config.zig    # Configuration management
-│  │  └─ kv.zig        # Key-value store
-│  └─ ui/
-│     └─ tui.zig       # Terminal UI
-└─ assets/
-   └─ default-relays.txt
-
+├── src/
+│   ├── main.zig                 # CLI entry point
+│   ├── interactive_client.zig   # Chat UI and message handling
+│   ├── nostr_ws_client.zig     # Nostr protocol over WebSocket
+│   ├── websocket_client.zig    # WebSocket implementation
+│   ├── websocket_tls.zig       # TLS/WSS support
+│   ├── nostr_crypto.zig        # Cryptographic operations
+│   └── message_queue.zig       # Message buffering
+├── lib/ws/                     # WebSocket library
+├── assets/
+│   ├── default-relays.txt      # Fallback relay list
+│   └── geohash-relays.json     # Regional relay mapping
+└── connect.sh                  # Quick connect script
 ```
 
-## Development Status
+## Contributing
 
-### Completed (Day 0)
-- [x] Project structure setup
-- [x] Basic CLI framework
-- [x] Module scaffolding
-
-### TODO
-- [ ] WebSocket library integration
-- [ ] libsecp256k1 bindings
-- [ ] Key generation and management
-- [ ] Event signing and verification
-- [ ] Basic publish/subscribe
-- [ ] Relay pool management
-- [ ] NIP-11 relay info fetching
-- [ ] NIP-42 authentication
-- [ ] TUI implementation
-- [ ] Binary optimization (<2MB)
+Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-MIT
+MIT - See [LICENSE](LICENSE) file for details
+
+## Acknowledgments
+
+- Built with [Zig](https://ziglang.org/)
+- Uses [secp256k1](https://github.com/bitcoin-core/secp256k1) for cryptography
+- Implements [Nostr protocol](https://github.com/nostr-protocol/nostr)
