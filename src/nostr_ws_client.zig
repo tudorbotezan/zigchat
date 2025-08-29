@@ -75,10 +75,14 @@ pub const NostrWsClient = struct {
     pub fn subscribeToChannelSmart(self: *Self, channel: []const u8, debug_mode: bool) !void {
         // BitChat-compatible subscription: kinds [1, 20000] with #g geotag
         // kind 1 = text notes (stored), kind 20000 = ephemeral location stream
+        // Get messages from last 5 minutes only to avoid overwhelming initial burst
+        const now: i64 = @intCast(std.time.timestamp());
+        const five_minutes_ago = now - 300;
+        
         var req_buffer: [512]u8 = undefined;
         const req = try std.fmt.bufPrint(&req_buffer,
-            \\["REQ","geo-{s}-live",{{"kinds":[1,20000],"#g":["{s}"],"limit":200}}]
-        , .{ channel, channel });
+            \\["REQ","geo-{s}-live",{{"kinds":[1,20000],"#g":["{s}"],"limit":200,"since":{d}}}]
+        , .{ channel, channel, five_minutes_ago });
 
         if (self.is_tls) {
             try self.tls_client.?.sendText(req);

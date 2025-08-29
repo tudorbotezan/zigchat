@@ -19,13 +19,42 @@ Requirements:
 - Zig 0.13.0 or later
 - libsecp256k1 (with Schnorr support enabled)
 
+### Building for your platform
+
 ```bash
-# Build
+# Build for your current platform (native)
 zig build -Doptimize=ReleaseSafe
 
 # Run
 ./zig-out/bin/bitchat
 ```
+
+### Cross-compilation
+
+The build system automatically detects the target OS and adjusts library paths accordingly:
+
+```bash
+# Build for Linux (from macOS or Windows)
+zig build -Dtarget=x86_64-linux -Doptimize=ReleaseSafe
+
+# Build for Windows (from macOS or Linux)
+zig build -Dtarget=x86_64-windows -Doptimize=ReleaseSafe
+
+# Build for macOS (from Linux or Windows)
+zig build -Dtarget=x86_64-macos -Doptimize=ReleaseSafe
+
+# Build for ARM64 Linux (e.g., Raspberry Pi)
+zig build -Dtarget=aarch64-linux -Doptimize=ReleaseSafe
+```
+
+### Library paths by platform
+
+The build system expects secp256k1 to be installed in these locations:
+- **macOS**: `/opt/homebrew` (Homebrew default)
+- **Linux**: `/usr/include` and `/usr/lib` (system packages)
+- **Windows**: `C:/secp256k1` (manual installation)
+
+If your libraries are in different locations, you'll need to modify the paths in `build.zig`.
 
 ## Usage
 
