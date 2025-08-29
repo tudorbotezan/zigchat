@@ -1,6 +1,4 @@
 const std = @import("std");
-const nostr = @import("nostr/client.zig");
-const store = @import("store/config.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -176,11 +174,10 @@ fn cmdChannel(allocator: std.mem.Allocator, channel: []const u8, relay_url: []co
                 std.debug.print("Please check your network connection and try again.\n\n", .{});
             }
 
-            std.debug.print("Falling back to simulation...\n\n", .{});
-            try cmdChannelSimulated(allocator, channel, relay_url);
+            std.debug.print("Unable to connect. Please try again later.\n\n", .{});
         };
     } else {
-        try cmdChannelSimulated(allocator, channel, relay_url);
+        std.debug.print("Invalid relay URL. Please use ws:// or wss:// protocol.\n", .{});
     }
 }
 
@@ -253,25 +250,6 @@ fn cmdChannelReal(allocator: std.mem.Allocator, channel: []const u8, relay_url: 
     }
 }
 
-fn cmdChannelSimulated(allocator: std.mem.Allocator, channel: []const u8, relay_url: []const u8) !void {
-    const SimpleNostrClient = @import("simple_nostr.zig").SimpleNostrClient;
-
-    std.debug.print("\n=== Zigchat TUI - Channel #{s} (Simulated) ===\n", .{channel});
-    std.debug.print("{s}\n", .{"=" ** 50});
-    std.debug.print("Relay: {s}\n", .{relay_url});
-    std.debug.print("{s}\n\n", .{"=" ** 50});
-
-    var client = SimpleNostrClient.init(allocator, relay_url);
-    defer client.deinit();
-
-    try client.connect();
-    try client.subscribeToChannel(channel);
-
-    std.debug.print("\nSimulating message stream:\n", .{});
-    std.debug.print("{s}\n\n", .{"-" ** 50});
-
-    try client.simulateMessages(channel);
-}
 
 fn cmdInteractive(allocator: std.mem.Allocator, channel: []const u8, relay_url: []const u8, debug_mode: bool) !void {
     const InteractiveClient = @import("interactive_client.zig").InteractiveClient;
