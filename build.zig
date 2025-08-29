@@ -18,26 +18,9 @@ pub fn build(b: *std.Build) void {
 
     exe.root_module.addImport("ws", ws_module);
     
-    // Link with secp256k1
-    const target_info = target.result;
-    switch (target_info.os.tag) {
-        .macos => {
-            exe.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
-            exe.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
-        },
-        .linux => {
-            exe.addIncludePath(.{ .cwd_relative = "/usr/include" });
-            exe.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
-        },
-        .windows => {
-            // Add Windows-specific paths if needed
-            exe.addIncludePath(.{ .cwd_relative = "C:/secp256k1/include" });
-            exe.addLibraryPath(.{ .cwd_relative = "C:/secp256k1/lib" });
-        },
-        else => {},
-    }
-    exe.linkSystemLibrary("secp256k1");
+    // Link with C libraries - let pkg-config handle the paths
     exe.linkLibC();
+    exe.linkSystemLibrary("secp256k1");
 
     b.installArtifact(exe);
 
@@ -59,24 +42,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Link with secp256k1
-    switch (target_info.os.tag) {
-        .macos => {
-            test_exe.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
-            test_exe.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
-        },
-        .linux => {
-            test_exe.addIncludePath(.{ .cwd_relative = "/usr/include" });
-            test_exe.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
-        },
-        .windows => {
-            test_exe.addIncludePath(.{ .cwd_relative = "C:/secp256k1/include" });
-            test_exe.addLibraryPath(.{ .cwd_relative = "C:/secp256k1/lib" });
-        },
-        else => {},
-    }
-    test_exe.linkSystemLibrary("secp256k1");
+    // Link with C libraries - let pkg-config handle the paths
     test_exe.linkLibC();
+    test_exe.linkSystemLibrary("secp256k1");
 
     b.installArtifact(test_exe);
 
@@ -92,23 +60,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    switch (target_info.os.tag) {
-        .macos => {
-            exe_unit_tests.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
-            exe_unit_tests.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
-        },
-        .linux => {
-            exe_unit_tests.addIncludePath(.{ .cwd_relative = "/usr/include" });
-            exe_unit_tests.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
-        },
-        .windows => {
-            exe_unit_tests.addIncludePath(.{ .cwd_relative = "C:/secp256k1/include" });
-            exe_unit_tests.addLibraryPath(.{ .cwd_relative = "C:/secp256k1/lib" });
-        },
-        else => {},
-    }
-    exe_unit_tests.linkSystemLibrary("secp256k1");
     exe_unit_tests.linkLibC();
+    exe_unit_tests.linkSystemLibrary("secp256k1");
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 
