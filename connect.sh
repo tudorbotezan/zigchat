@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Easy connect script for Bitchat TUI
+# Easy connect script for Zigchat TUI
 # Default: Connect to 9q geohash on relay.damus.io
 # Usage: ./connect.sh [geohash] [relay] [--debug]
 
@@ -23,4 +23,4 @@ fi
 echo ""
 
 # Use 'chat' for interactive mode, pass debug flag if present
-./zig-out/bin/bitchat chat "$GEOHASH" "$RELAY" $DEBUG
+./zig-out/bin/zigchat chat "$GEOHASH" "$RELAY" $DEBUG

@@ -1,4 +1,4 @@
-# Bitchat TUI - Minimal Nostr Client in Zig
+# Zigchat - Minimal Nostr Client in Zig
 
 A tiny terminal client for Nostr protocol, targeting sub-2MB static binary that runs on macOS, Linux, and Windows.
 
@@ -26,7 +26,7 @@ Requirements:
 zig build -Doptimize=ReleaseSafe
 
 # Run
-./zig-out/bin/bitchat
+./zig-out/bin/zigchat
 ```
 
 ### Cross-compilation
@@ -60,29 +60,29 @@ If your libraries are in different locations, you'll need to modify the paths in
 
 ```bash
 # Generate new keypair
-bitchat keygen
+zigchat keygen
 
 # Show current identity  
-bitchat whoami
+zigchat whoami
 
 # Manage relays
-bitchat relay add wss://relay.example.com
-bitchat relay ls
-bitchat relay rm 0
+zigchat relay add wss://relay.example.com
+zigchat relay ls
+zigchat relay rm 0
 
 # Publish a note
-bitchat pub "Hello, Nostr!"
+zigchat pub "Hello, Nostr!"
 
 # Subscribe to notes
-bitchat sub --kinds 1 --limit 50
+zigchat sub --kinds 1 --limit 50
 
 # Test authentication
-bitchat auth test
+zigchat auth test
 ```
 
 ## Configuration
 
-Config is stored at `~/.config/bitchat/config.json`:
+Config is stored at `~/.config/zigchat/config.json`:
 
 ```json
 {
@@ -107,7 +107,7 @@ Config is stored at `~/.config/bitchat/config.json`:
 ## Project Structure
 
 ```
-bitchat-tui-zig/
+zigchat/
 ├─ build.zig           # Build configuration
 ├─ build.zig.zon       # Package manifest
 ├─ src/

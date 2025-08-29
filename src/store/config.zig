@@ -24,7 +24,7 @@ pub const Config = struct {
 
 pub fn getConfigPath(allocator: std.mem.Allocator) ![]u8 {
     const home = std.os.getenv("HOME") orelse return error.NoHomeDir;
-    return try std.fmt.allocPrint(allocator, "{s}/.config/bitchat/config.json", .{home});
+    return try std.fmt.allocPrint(allocator, "{s}/.config/zigchat/config.json", .{home});
 }
 
 pub fn load(allocator: std.mem.Allocator) !Config {

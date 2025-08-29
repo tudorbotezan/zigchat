@@ -57,7 +57,7 @@ pub fn main() !void {
         if (args.len >= 3 and std.mem.eql(u8, args[2], "test")) {
             try cmdAuthTest(allocator);
         } else {
-            std.debug.print("Usage: bitchat auth test\n", .{});
+            std.debug.print("Usage: zigchat auth test\n", .{});
         }
     } else if (std.mem.eql(u8, command, "channel")) {
         const channel = if (args.len > 2) args[2] else "9q";
@@ -87,20 +87,20 @@ pub fn main() !void {
 fn printUsage() !void {
     const stdout = std.io.getStdOut().writer();
     try stdout.print(
-        \\Bitchat - Minimal Nostr TUI Client
+        \\Zigchat - Minimal Nostr TUI Client
         \\
         \\Usage:
-        \\  bitchat keygen                  Generate new keypair
-        \\  bitchat whoami                  Show current identity
-        \\  bitchat relay add <url>         Add relay
-        \\  bitchat relay ls                List relays
-        \\  bitchat relay rm <index>        Remove relay
-        \\  bitchat pub <message>           Publish note
-        \\  bitchat sub [options]           Subscribe to notes
-        \\  bitchat auth test               Test AUTH flow
-        \\  bitchat channel [name] [relay]  Join a channel (default: #9q)
-        \\  bitchat chat [name] [relay]     Interactive chat mode (can send messages)
-        \\  bitchat ws-test [url]           Test WebSocket connection
+        \\  zigchat keygen                  Generate new keypair
+        \\  zigchat whoami                  Show current identity
+        \\  zigchat relay add <url>         Add relay
+        \\  zigchat relay ls                List relays
+        \\  zigchat relay rm <index>        Remove relay
+        \\  zigchat pub <message>           Publish note
+        \\  zigchat sub [options]           Subscribe to notes
+        \\  zigchat auth test               Test AUTH flow
+        \\  zigchat channel [name] [relay]  Join a channel (default: #9q)
+        \\  zigchat chat [name] [relay]     Interactive chat mode (can send messages)
+        \\  zigchat ws-test [url]           Test WebSocket connection
         \\
     , .{});
 }
@@ -109,9 +109,9 @@ fn printRelayUsage() !void {
     const stdout = std.io.getStdOut().writer();
     try stdout.print(
         \\Usage:
-        \\  bitchat relay add <url>    Add a relay
-        \\  bitchat relay ls           List all relays
-        \\  bitchat relay rm <index>   Remove relay by index
+        \\  zigchat relay add <url>    Add a relay
+        \\  zigchat relay ls           List all relays
+        \\  zigchat relay rm <index>   Remove relay by index
         \\
     , .{});
 }
@@ -172,10 +172,8 @@ fn cmdChannel(allocator: std.mem.Allocator, channel: []const u8, relay_url: []co
             std.debug.print("WebSocket connection failed: {}\n", .{err});
 
             if (std.mem.startsWith(u8, relay_url, "wss://")) {
-                std.debug.print("\nTLS connection failed. You can use a proxy as a workaround:\n", .{});
-                std.debug.print("1. pip3 install websockets\n", .{});
-                std.debug.print("2. python3 ws_proxy.py 8080 {s}\n", .{relay_url});
-                std.debug.print("3. ./zig-out/bin/bitchat channel {s} ws://localhost:8080\n\n", .{channel});
+                std.debug.print("\nConnection to {s} failed.\n", .{relay_url});
+                std.debug.print("Please check your network connection and try again.\n\n", .{});
             }
 
             std.debug.print("Falling back to simulation...\n\n", .{});
@@ -189,7 +187,7 @@ fn cmdChannel(allocator: std.mem.Allocator, channel: []const u8, relay_url: []co
 fn cmdChannelReal(allocator: std.mem.Allocator, channel: []const u8, relay_url: []const u8) !void {
     const NostrWsClient = @import("nostr_ws_client.zig").NostrWsClient;
 
-    std.debug.print("\n=== Bitchat TUI - Geohash: {s} ===\n", .{channel});
+    std.debug.print("\n=== Zigchat TUI - Geohash: {s} ===\n", .{channel});
     std.debug.print("{s}\n", .{"=" ** 50});
     std.debug.print("Relay: {s}\n", .{relay_url});
     std.debug.print("{s}\n\n", .{"=" ** 50});
@@ -258,7 +256,7 @@ fn cmdChannelReal(allocator: std.mem.Allocator, channel: []const u8, relay_url: 
 fn cmdChannelSimulated(allocator: std.mem.Allocator, channel: []const u8, relay_url: []const u8) !void {
     const SimpleNostrClient = @import("simple_nostr.zig").SimpleNostrClient;
 
-    std.debug.print("\n=== Bitchat TUI - Channel #{s} (Simulated) ===\n", .{channel});
+    std.debug.print("\n=== Zigchat TUI - Channel #{s} (Simulated) ===\n", .{channel});
     std.debug.print("{s}\n", .{"=" ** 50});
     std.debug.print("Relay: {s}\n", .{relay_url});
     std.debug.print("{s}\n\n", .{"=" ** 50});

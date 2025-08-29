@@ -1,10 +1,8 @@
 # Zig build artifacts
 zig-cache/
 zig-out/
-
-# Local build executable
-build.zig
 .zig-cache/
+.claude/
 # Compiled object files, libraries and executables
 *.o
 *.a
@@ -29,3 +27,23 @@ build.zig
 *~
 *.bak
 *.tmp
+
+# Node.js dependencies (if not needed for the project)
+node_modules/
+package-lock.json
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Logs
+*.log
+
+# Test artifacts
+test_relay.js
+ws_proxy.py
+proxy.log
+
+# Shell scripts (if temporary)
+chat.sh
+connect.sh

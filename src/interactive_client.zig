@@ -215,7 +215,7 @@ pub const InteractiveClient = struct {
             try self.relay_threads.append(thread);
         }
 
-        std.debug.print("\n=== Bitchat Interactive Mode ===\n", .{});
+        std.debug.print("\n=== Zigchat Interactive Mode ===\n", .{});
         std.debug.print("Username: {s}\n", .{self.username});
         std.debug.print("Geohash: {s}\n", .{self.channel});
         std.debug.print("Connected to {} relays\n", .{self.relay_threads.items.len});
