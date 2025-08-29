@@ -15,7 +15,7 @@ for arg in "$@"; do
     fi
 done
 
-echo "🚀 Connecting to geohash $GEOHASH on $RELAY..."
+echo "🚀 Connecting to geohash $GEOHASH"
 echo "📍 Location: Central California (36.5625, -118.1250)"
 if [ -n "$DEBUG" ]; then
     echo "🔧 Debug mode enabled"
