@@ -102,9 +102,11 @@ pub const WebSocketClient = struct {
             if (err == error.WouldBlock or err == error.Again) {
                 return null; // No data available right now
             }
-            // Don't print WouldBlock errors - they're expected in non-blocking mode
-            // Also don't print TlsConnectionTruncated - it's a normal disconnection
-            if (err != error.WouldBlock and err != error.Again and err != error.TlsConnectionTruncated) {
+            // Don't print expected errors:
+            // - WouldBlock/Again: expected in non-blocking mode
+            // - TlsConnectionTruncated: normal disconnection
+            // - ReservedOpcode: protocol-level error that doesn't affect functionality
+            if (err != error.WouldBlock and err != error.Again and err != error.TlsConnectionTruncated and err != error.ReservedOpcode) {
                 std.debug.print("WebSocket error: {}\n", .{err});
             }
             return err;
