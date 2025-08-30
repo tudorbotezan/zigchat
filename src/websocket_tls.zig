@@ -179,7 +179,8 @@ pub const TlsWebSocketClient = struct {
                 return null; // No data available right now
             }
             // Don't print WouldBlock errors - they're expected in non-blocking mode
-            if (err != error.WouldBlock and err != error.Again) {
+            // Also don't print TlsConnectionTruncated - it's a normal disconnection
+            if (err != error.WouldBlock and err != error.Again and err != error.TlsConnectionTruncated) {
                 std.debug.print("WebSocket error: {}\n", .{err});
             }
             return err;
