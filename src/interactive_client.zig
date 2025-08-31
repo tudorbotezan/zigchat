@@ -22,6 +22,8 @@ pub const InteractiveClient = struct {
     users_mutex: std.Thread.Mutex,
     blocked_users: std.hash_map.StringHashMap(void), // Track blocked user public keys
     blocked_mutex: std.Thread.Mutex,
+    blocked_names: std.hash_map.StringHashMap(void), // Track blocked usernames/patterns
+    blocked_names_mutex: std.Thread.Mutex,
     input_buffer: std.ArrayList(u8), // Buffer to store current user input
     input_mutex: std.Thread.Mutex, // Mutex to protect input buffer
     original_termios: ?std.posix.termios = null, // Store original terminal settings
@@ -193,6 +195,8 @@ pub const InteractiveClient = struct {
             .users_mutex = .{},
             .blocked_users = std.hash_map.StringHashMap(void).init(allocator),
             .blocked_mutex = .{},
+            .blocked_names = std.hash_map.StringHashMap(void).init(allocator),
+            .blocked_names_mutex = .{},
             .input_buffer = std.ArrayList(u8).init(allocator),
             .input_mutex = .{},
             .original_termios = null,
@@ -206,6 +210,13 @@ pub const InteractiveClient = struct {
         client.loadBlockedUsers() catch |err| {
             if (debug_mode) {
                 std.debug.print("Could not load blocked users: {}\n", .{err});
+            }
+        };
+        
+        // Load blocked names from file
+        client.loadBlockedNames() catch |err| {
+            if (debug_mode) {
+                std.debug.print("Could not load blocked names: {}\n", .{err});
             }
         };
         
@@ -244,6 +255,9 @@ pub const InteractiveClient = struct {
         std.debug.print("  /block <id> or /b <id> - Block a user (by pubkey, #tag, or name#tag)\n", .{});
         std.debug.print("  /unblock <id> - Unblock a user\n", .{});
         std.debug.print("  /blocks - List blocked users\n", .{});
+        std.debug.print("  /blockname <pattern> - Block a username or pattern (e.g., ME*)\n", .{});
+        std.debug.print("  /unblockname <pattern> - Unblock a username or pattern\n", .{});
+        std.debug.print("  /blockednames - List blocked names/patterns\n", .{});
         std.debug.print("  /quit or Ctrl-C to exit\n", .{});
         std.debug.print("{s}\n\n", .{"-" ** 50});
 
@@ -322,7 +336,7 @@ pub const InteractiveClient = struct {
     }
 
     fn displayLoop(self: *Self) void {
-        while (self.running.load(.monotonic)) {
+        message_loop: while (self.running.load(.monotonic)) {
             // Get next message with a short timeout
             const queued = self.message_queue.popWithTimeout(10_000_000) orelse continue; // 10ms timeout
             defer {
@@ -336,7 +350,7 @@ pub const InteractiveClient = struct {
             switch (message.type) {
                 .EVENT => {
                     if (message.content) |content| {
-                        // Check if user is blocked
+                        // Check if user is blocked by pubkey
                         if (message.author) |author| {
                             self.blocked_mutex.lock();
                             const is_blocked = self.blocked_users.contains(author);
@@ -364,6 +378,26 @@ pub const InteractiveClient = struct {
                             if (tags.len >= 2 and std.mem.eql(u8, tags[0], "n")) {
                                 if (tags[1].len > 0) {
                                     nickname = tags[1];
+                                }
+                            }
+                        }
+                        
+                        // Check if username is blocked
+                        if (nickname) |nick| {
+                            self.blocked_names_mutex.lock();
+                            defer self.blocked_names_mutex.unlock();
+                            
+                            // Check exact match
+                            if (self.blocked_names.contains(nick)) {
+                                continue; // Skip messages from blocked names
+                            }
+                            
+                            // Check pattern matching (e.g., "ME#*" pattern)
+                            var iter = self.blocked_names.iterator();
+                            while (iter.next()) |entry| {
+                                const pattern = entry.key_ptr.*;
+                                if (self.matchesPattern(nick, pattern)) {
+                                    continue :message_loop; // Skip messages matching blocked patterns
                                 }
                             }
                         }
@@ -688,6 +722,40 @@ pub const InteractiveClient = struct {
                     } else {
                         try stdout.print("\nUsage: /unblock <user_id>\n> ", .{});
                     }
+                    continue;
+                } else if (std.mem.startsWith(u8, trimmed, "/blockname ")) {
+                    const space_idx = std.mem.indexOf(u8, trimmed, " ") orelse {
+                        try stdout.print("\n> ", .{});
+                        continue;
+                    };
+                    const name_pattern = std.mem.trim(u8, trimmed[space_idx + 1 ..], " \t");
+                    if (name_pattern.len > 0) {
+                        try stdout.print("\n", .{});
+                        try self.blockName(name_pattern);
+                    } else {
+                        try stdout.print("\nUsage: /blockname <name_or_pattern>\n", .{});
+                        try stdout.print("Examples:\n", .{});
+                        try stdout.print("  /blockname ME      - blocks exact name 'ME'\n", .{});
+                        try stdout.print("  /blockname ME*     - blocks names starting with 'ME'\n", .{});
+                        try stdout.print("  /blockname *spam*  - blocks names containing 'spam'\n> ", .{});
+                    }
+                    continue;
+                } else if (std.mem.startsWith(u8, trimmed, "/unblockname ")) {
+                    const space_idx = std.mem.indexOf(u8, trimmed, " ") orelse {
+                        try stdout.print("\n> ", .{});
+                        continue;
+                    };
+                    const name_pattern = std.mem.trim(u8, trimmed[space_idx + 1 ..], " \t");
+                    if (name_pattern.len > 0) {
+                        try stdout.print("\n", .{});
+                        try self.unblockName(name_pattern);
+                    } else {
+                        try stdout.print("\nUsage: /unblockname <name_or_pattern>\n> ", .{});
+                    }
+                    continue;
+                } else if (std.mem.eql(u8, trimmed, "/blockednames")) {
+                    try stdout.print("\n", .{});
+                    self.showBlockedNames();
                     continue;
                 }
                 
@@ -1055,6 +1123,193 @@ pub const InteractiveClient = struct {
             try file.writer().print("{s}\n", .{pubkey});
         }
     }
+    
+    fn blockName(self: *Self, name_pattern: []const u8) !void {
+        self.blocked_names_mutex.lock();
+        
+        // Check if already blocked
+        if (self.blocked_names.contains(name_pattern)) {
+            self.blocked_names_mutex.unlock();
+            std.debug.print("Name/pattern already blocked: {s}\n", .{name_pattern});
+            return;
+        }
+        
+        // Add to blocked names list
+        const name_copy = try self.allocator.dupe(u8, name_pattern);
+        try self.blocked_names.put(name_copy, {});
+        
+        self.blocked_names_mutex.unlock();
+        
+        // Save to file (after releasing the lock)
+        self.saveBlockedNames() catch |err| {
+            if (self.debug_mode) {
+                std.debug.print("Failed to save blocked names: {}\n", .{err});
+            }
+        };
+        
+        std.debug.print("Blocked name/pattern: {s}\n", .{name_pattern});
+    }
+    
+    fn unblockName(self: *Self, name_pattern: []const u8) !void {
+        self.blocked_names_mutex.lock();
+        
+        const removed = self.blocked_names.fetchRemove(name_pattern);
+        if (removed) |entry| {
+            self.allocator.free(entry.key);
+        }
+        
+        self.blocked_names_mutex.unlock();
+        
+        if (removed != null) {
+            // Save to file (after releasing the lock)
+            self.saveBlockedNames() catch |err| {
+                if (self.debug_mode) {
+                    std.debug.print("Failed to save blocked names: {}\n", .{err});
+                }
+            };
+            
+            std.debug.print("Unblocked name/pattern: {s}\n", .{name_pattern});
+        } else {
+            std.debug.print("Name/pattern not in block list: {s}\n", .{name_pattern});
+        }
+    }
+    
+    fn showBlockedNames(self: *Self) void {
+        self.blocked_names_mutex.lock();
+        defer self.blocked_names_mutex.unlock();
+        
+        std.debug.print("\n=== Blocked Names/Patterns ===\n", .{});
+        
+        if (self.blocked_names.count() == 0) {
+            std.debug.print("  No blocked names\n", .{});
+            std.debug.print("{s}\n> ", .{"-" ** 30});
+            return;
+        }
+        
+        var iter = self.blocked_names.iterator();
+        var count: usize = 0;
+        while (iter.next()) |entry| {
+            const name_pattern = entry.key_ptr.*;
+            std.debug.print("  {s}\n", .{name_pattern});
+            count += 1;
+        }
+        
+        std.debug.print("\nTotal: {} blocked names/patterns\n", .{count});
+        std.debug.print("{s}\n> ", .{"-" ** 30});
+    }
+    
+    fn matchesPattern(self: *Self, text: []const u8, pattern: []const u8) bool {
+        _ = self;
+        // Simple wildcard matching: * matches any sequence of characters
+        if (pattern.len == 0) return text.len == 0;
+        
+        var text_idx: usize = 0;
+        var pattern_idx: usize = 0;
+        var star_idx: ?usize = null;
+        var match_idx: usize = 0;
+        
+        while (text_idx < text.len) {
+            if (pattern_idx < pattern.len and pattern[pattern_idx] == '*') {
+                star_idx = pattern_idx;
+                match_idx = text_idx;
+                pattern_idx += 1;
+            } else if (pattern_idx < pattern.len and 
+                      (pattern[pattern_idx] == text[text_idx] or pattern[pattern_idx] == '?')) {
+                text_idx += 1;
+                pattern_idx += 1;
+            } else if (star_idx != null) {
+                pattern_idx = star_idx.? + 1;
+                match_idx += 1;
+                text_idx = match_idx;
+            } else {
+                return false;
+            }
+        }
+        
+        // Check remaining pattern characters are all '*'
+        while (pattern_idx < pattern.len and pattern[pattern_idx] == '*') {
+            pattern_idx += 1;
+        }
+        
+        return pattern_idx == pattern.len;
+    }
+    
+    fn loadBlockedNames(self: *Self) !void {
+        // Get home directory
+        const home = std.process.getEnvVarOwned(self.allocator, "HOME") catch return;
+        defer self.allocator.free(home);
+        
+        // Build path to blocked names file
+        var path_buf: [1024]u8 = undefined;
+        const config_dir = try std.fmt.bufPrint(&path_buf, "{s}/.zigchat", .{home});
+        
+        // Create directory if it doesn't exist
+        std.fs.makeDirAbsolute(config_dir) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+        
+        var file_path_buf: [1024]u8 = undefined;
+        const file_path = try std.fmt.bufPrint(&file_path_buf, "{s}/blocked_names.txt", .{config_dir});
+        
+        // Try to open the file
+        const file = std.fs.openFileAbsolute(file_path, .{}) catch |err| switch (err) {
+            error.FileNotFound => return, // No blocked names yet
+            else => return err,
+        };
+        defer file.close();
+        
+        // Read the file
+        const content = try file.readToEndAlloc(self.allocator, 1024 * 1024);
+        defer self.allocator.free(content);
+        
+        // Parse each line as a name/pattern
+        var lines = std.mem.tokenizeAny(u8, content, "\n\r");
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, " \t");
+            if (trimmed.len > 0) {
+                const name_copy = try self.allocator.dupe(u8, trimmed);
+                try self.blocked_names.put(name_copy, {});
+            }
+        }
+        
+        if (self.debug_mode and self.blocked_names.count() > 0) {
+            std.debug.print("Loaded {} blocked names/patterns\n", .{self.blocked_names.count()});
+        }
+    }
+    
+    fn saveBlockedNames(self: *Self) !void {
+        // Get home directory
+        const home = std.process.getEnvVarOwned(self.allocator, "HOME") catch return error.NoHomeDir;
+        defer self.allocator.free(home);
+        
+        // Build path to blocked names file
+        var path_buf: [1024]u8 = undefined;
+        const config_dir = try std.fmt.bufPrint(&path_buf, "{s}/.zigchat", .{home});
+        
+        // Create directory if it doesn't exist
+        std.fs.makeDirAbsolute(config_dir) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+        
+        var file_path_buf: [1024]u8 = undefined;
+        const file_path = try std.fmt.bufPrint(&file_path_buf, "{s}/blocked_names.txt", .{config_dir});
+        
+        // Create/overwrite the file
+        const file = try std.fs.createFileAbsolute(file_path, .{});
+        defer file.close();
+        
+        // Write each blocked name/pattern on a new line
+        self.blocked_names_mutex.lock();
+        defer self.blocked_names_mutex.unlock();
+        
+        var iter = self.blocked_names.iterator();
+        while (iter.next()) |entry| {
+            const name_pattern = entry.key_ptr.*;
+            try file.writer().print("{s}\n", .{name_pattern});
+        }
+    }
 
     pub fn deinit(self: *Self) void {
         self.running.store(false, .monotonic);
@@ -1096,6 +1351,15 @@ pub const InteractiveClient = struct {
         }
         self.blocked_users.deinit();
         self.blocked_mutex.unlock();
+        
+        // Clean up blocked names map
+        self.blocked_names_mutex.lock();
+        var blocked_names_iter = self.blocked_names.iterator();
+        while (blocked_names_iter.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.blocked_names.deinit();
+        self.blocked_names_mutex.unlock();
         
         // Clean up message queue
         self.message_queue.deinit();
