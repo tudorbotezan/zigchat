@@ -377,7 +377,17 @@ pub const InteractiveClient = struct {
                         // Get display name and user tag
                         var name_buf: [128]u8 = undefined;
                         const display_prefix = if (is_our_echo) blk: {
-                            break :blk "[You]";
+                            // Use actual username with tag for consistency
+                            const pubkey_hex = std.fmt.fmtSliceHexLower(&self.keypair.public_key);
+                            var hex_buf: [64]u8 = undefined;
+                            const hex_str = std.fmt.bufPrint(&hex_buf, "{}", .{pubkey_hex}) catch "";
+                            if (hex_str.len >= 4) {
+                                const tag = hex_str[0..4];
+                                const formatted = std.fmt.bufPrint(&name_buf, "[{s}#{s}]", .{ self.username, tag }) catch "[anon]";
+                                break :blk formatted;
+                            }
+                            const formatted = std.fmt.bufPrint(&name_buf, "[{s}]", .{self.username}) catch "[anon]";
+                            break :blk formatted;
                         } else blk: {
                             const base_name = if (nickname) |n| n else "anon";
                             
@@ -399,10 +409,22 @@ pub const InteractiveClient = struct {
                         }
 
                         // Clear current line, print message, restore prompt
+                        // Use orange color for user's own messages
+                        const orange = "\x1b[38;5;208m";
+                        const reset = "\x1b[0m";
+                        
                         if (self.debug_mode and message.kind != null) {
-                            std.debug.print("\r{s: <50}\r[kind:{d}]{s}: {s}\n> ", .{ " ", message.kind.?, display_prefix, content });
+                            if (is_our_echo) {
+                                std.debug.print("\r{s: <50}\r[kind:{d}]{s}{s}{s}: {s}\n> ", .{ " ", message.kind.?, orange, display_prefix, reset, content });
+                            } else {
+                                std.debug.print("\r{s: <50}\r[kind:{d}]{s}: {s}\n> ", .{ " ", message.kind.?, display_prefix, content });
+                            }
                         } else {
-                            std.debug.print("\r{s: <50}\r{s}: {s}\n> ", .{ " ", display_prefix, content });
+                            if (is_our_echo) {
+                                std.debug.print("\r{s: <50}\r{s}{s}{s}: {s}\n> ", .{ " ", orange, display_prefix, reset, content });
+                            } else {
+                                std.debug.print("\r{s: <50}\r{s}: {s}\n> ", .{ " ", display_prefix, content });
+                            }
                         }
                     }
                 },
@@ -558,9 +580,7 @@ pub const InteractiveClient = struct {
 
                 // Send message
                 try self.sendMessage(trimmed);
-                if (self.debug_mode) {
-                    std.debug.print("Sent: {s}\n", .{trimmed});
-                }
+                // Message will be displayed when echo comes back
             } else {
                 // EOF (Ctrl-D)
                 break;

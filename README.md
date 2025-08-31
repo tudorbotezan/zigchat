@@ -74,6 +74,9 @@ zig build -Doptimize=ReleaseSafe
 Once connected:
 - Type any message and press Enter to send
 - `/users` - Show active users in the channel
+- `/block <id>` or `/b <id>` - Block a user (by pubkey, #tag, or username#tag)
+- `/unblock <id>` - Unblock a user
+- `/blocks` - List all blocked users
 - `/quit` - Exit the chat
 
 ## Geohash Channels
