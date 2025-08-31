@@ -453,7 +453,6 @@ pub const InteractiveClient = struct {
                         // Use ANSI escape codes for proper display management
                         const orange = "\x1b[38;5;208m";
                         const reset = "\x1b[0m";
-                        const clear_line = "\x1b[2K"; // Clear entire line
                         
                         // Get current input buffer content
                         self.input_mutex.lock();
@@ -461,39 +460,45 @@ pub const InteractiveClient = struct {
                         self.input_mutex.unlock();
                         defer if (input_copy.len > 0) self.allocator.free(input_copy);
                         
-                        // Clear current line, print message, then restore prompt with input
+                        // Move to beginning of line, clear it, print message, then new prompt with input
+                        const stdout = std.io.getStdOut().writer();
+                        
                         if (self.debug_mode and message.kind != null) {
                             if (is_our_echo) {
-                                std.debug.print("\r{s}[kind:{d}]{s}{s}{s}: {s}\n> {s}", .{ clear_line, message.kind.?, orange, display_prefix, reset, content, input_copy });
+                                stdout.print("\r\x1b[2K[kind:{d}]{s}{s}{s}: {s}\n> {s}", .{ message.kind.?, orange, display_prefix, reset, content, input_copy }) catch {};
                             } else {
-                                std.debug.print("\r{s}[kind:{d}]{s}: {s}\n> {s}", .{ clear_line, message.kind.?, display_prefix, content, input_copy });
+                                stdout.print("\r\x1b[2K[kind:{d}]{s}: {s}\n> {s}", .{ message.kind.?, display_prefix, content, input_copy }) catch {};
                             }
                         } else {
                             if (is_our_echo) {
-                                std.debug.print("\r{s}{s}{s}{s}: {s}\n> {s}", .{ clear_line, orange, display_prefix, reset, content, input_copy });
+                                stdout.print("\r\x1b[2K{s}{s}{s}: {s}\n> {s}", .{ orange, display_prefix, reset, content, input_copy }) catch {};
                             } else {
-                                std.debug.print("\r{s}{s}: {s}\n> {s}", .{ clear_line, display_prefix, content, input_copy });
+                                stdout.print("\r\x1b[2K{s}: {s}\n> {s}", .{ display_prefix, content, input_copy }) catch {};
                             }
                         }
+                        // Flush output to ensure it's displayed immediately
+                        std.io.getStdOut().sync() catch {};
                     }
                 },
                 .EOSE => {
                     if (self.debug_mode) {
+                        const stdout = std.io.getStdOut().writer();
                         self.input_mutex.lock();
                         const input_copy = self.allocator.dupe(u8, self.input_buffer.items) catch "";
                         self.input_mutex.unlock();
                         defer if (input_copy.len > 0) self.allocator.free(input_copy);
-                        std.debug.print("\r\x1b[2K[{s}] Ready for real-time messages\n> {s}", .{ relay_url, input_copy });
+                        stdout.print("\r\x1b[2K[{s}] Ready for real-time messages\n> {s}", .{ relay_url, input_copy }) catch {};
                     }
                 },
                 .NOTICE => {
                     if (self.debug_mode) {
                         if (message.content) |content| {
+                            const stdout = std.io.getStdOut().writer();
                             self.input_mutex.lock();
                             const input_copy = self.allocator.dupe(u8, self.input_buffer.items) catch "";
                             self.input_mutex.unlock();
                             defer if (input_copy.len > 0) self.allocator.free(input_copy);
-                            std.debug.print("\r\x1b[2K[{s}] NOTICE: {s}\n> {s}", .{ relay_url, content, input_copy });
+                            stdout.print("\r\x1b[2K[{s}] NOTICE: {s}\n> {s}", .{ relay_url, content, input_copy }) catch {};
                         }
                     }
                 },
@@ -511,16 +516,17 @@ pub const InteractiveClient = struct {
                             }
                             
                             if (is_ours) {
+                                const stdout = std.io.getStdOut().writer();
                                 self.input_mutex.lock();
                                 const input_copy = self.allocator.dupe(u8, self.input_buffer.items) catch "";
                                 self.input_mutex.unlock();
                                 defer if (input_copy.len > 0) self.allocator.free(input_copy);
                                 
                                 if (message.ok_status orelse false) {
-                                    std.debug.print("\r\x1b[2K{s} [{s}] Accepted our event\n> {s}", .{ symbol, relay_url, input_copy });
+                                    stdout.print("\r\x1b[2K{s} [{s}] Accepted our event\n> {s}", .{ symbol, relay_url, input_copy }) catch {};
                                 } else {
                                     const reason = message.content orelse "unknown reason";
-                                    std.debug.print("\r\x1b[2K{s} [{s}] Rejected: {s}\n> {s}", .{ symbol, relay_url, reason, input_copy });
+                                    stdout.print("\r\x1b[2K{s} [{s}] Rejected: {s}\n> {s}", .{ symbol, relay_url, reason, input_copy }) catch {};
                                 }
                             }
                         }
@@ -529,11 +535,12 @@ pub const InteractiveClient = struct {
                 .AUTH => {
                     // Note: AUTH handling should be done in the relay thread
                     if (self.debug_mode and message.content != null) {
+                        const stdout = std.io.getStdOut().writer();
                         self.input_mutex.lock();
                         const input_copy = self.allocator.dupe(u8, self.input_buffer.items) catch "";
                         self.input_mutex.unlock();
                         defer if (input_copy.len > 0) self.allocator.free(input_copy);
-                        std.debug.print("\r\x1b[2K[{s}] AUTH challenge: {s}\n> {s}", .{ relay_url, message.content.?, input_copy });
+                        stdout.print("\r\x1b[2K[{s}] AUTH challenge: {s}\n> {s}", .{ relay_url, message.content.?, input_copy }) catch {};
                     }
                 },
                 else => {},
@@ -767,8 +774,9 @@ pub const InteractiveClient = struct {
                 self.input_mutex.lock();
                 if (self.input_buffer.items.len > 0) {
                     _ = self.input_buffer.pop();
-                    // Move cursor back, clear to end of line, redraw
+                    // Clear line and redraw with updated buffer
                     try stdout.print("\r\x1b[2K> {s}", .{self.input_buffer.items});
+                    std.io.getStdOut().sync() catch {};
                 }
                 self.input_mutex.unlock();
             } else if (char == 3) { // Ctrl-C
@@ -783,8 +791,9 @@ pub const InteractiveClient = struct {
                 self.input_mutex.lock();
                 self.input_buffer.append(char) catch {};
                 self.input_mutex.unlock();
-                // Echo the character
+                // Echo the character and flush immediately
                 try stdout.writeByte(char);
+                std.io.getStdOut().sync() catch {};
             } else if (char == 27) { // ESC sequence (arrow keys, etc.)
                 // Read next two bytes for arrow keys
                 var seq: [2]u8 = undefined;
