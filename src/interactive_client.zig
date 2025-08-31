@@ -2,6 +2,8 @@ const std = @import("std");
 const NostrWsClient = @import("nostr_ws_client.zig").NostrWsClient;
 const nostr_crypto = @import("nostr_crypto.zig");
 const MessageQueue = @import("message_queue.zig").MessageQueue;
+const builtin = @import("builtin");
+const os = std.os;
 
 pub const InteractiveClient = struct {
     allocator: std.mem.Allocator,
@@ -20,7 +22,10 @@ pub const InteractiveClient = struct {
     users_mutex: std.Thread.Mutex,
     blocked_users: std.hash_map.StringHashMap(void), // Track blocked user public keys
     blocked_mutex: std.Thread.Mutex,
-
+    input_buffer: std.ArrayList(u8), // Buffer to store current user input
+    input_mutex: std.Thread.Mutex, // Mutex to protect input buffer
+    original_termios: ?std.posix.termios = null, // Store original terminal settings
+    
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator, channel: []const u8, primary_relay: []const u8, debug_mode: bool) Self {
@@ -188,6 +193,9 @@ pub const InteractiveClient = struct {
             .users_mutex = .{},
             .blocked_users = std.hash_map.StringHashMap(void).init(allocator),
             .blocked_mutex = .{},
+            .input_buffer = std.ArrayList(u8).init(allocator),
+            .input_mutex = .{},
+            .original_termios = null,
         };
         
         // Initialize last_sent_ids
@@ -408,35 +416,50 @@ pub const InteractiveClient = struct {
                             std.debug.print("\r🔄 [{s}] Echo confirmed\n> ", .{relay_url});
                         }
 
-                        // Clear current line, print message, restore prompt
-                        // Use orange color for user's own messages
+                        // Use ANSI escape codes for proper display management
                         const orange = "\x1b[38;5;208m";
                         const reset = "\x1b[0m";
+                        const clear_line = "\x1b[2K"; // Clear entire line
                         
+                        // Get current input buffer content
+                        self.input_mutex.lock();
+                        const input_copy = self.allocator.dupe(u8, self.input_buffer.items) catch "";
+                        self.input_mutex.unlock();
+                        defer if (input_copy.len > 0) self.allocator.free(input_copy);
+                        
+                        // Clear current line, print message, then restore prompt with input
                         if (self.debug_mode and message.kind != null) {
                             if (is_our_echo) {
-                                std.debug.print("\r{s: <50}\r[kind:{d}]{s}{s}{s}: {s}\n> ", .{ " ", message.kind.?, orange, display_prefix, reset, content });
+                                std.debug.print("\r{s}[kind:{d}]{s}{s}{s}: {s}\n> {s}", .{ clear_line, message.kind.?, orange, display_prefix, reset, content, input_copy });
                             } else {
-                                std.debug.print("\r{s: <50}\r[kind:{d}]{s}: {s}\n> ", .{ " ", message.kind.?, display_prefix, content });
+                                std.debug.print("\r{s}[kind:{d}]{s}: {s}\n> {s}", .{ clear_line, message.kind.?, display_prefix, content, input_copy });
                             }
                         } else {
                             if (is_our_echo) {
-                                std.debug.print("\r{s: <50}\r{s}{s}{s}: {s}\n> ", .{ " ", orange, display_prefix, reset, content });
+                                std.debug.print("\r{s}{s}{s}{s}: {s}\n> {s}", .{ clear_line, orange, display_prefix, reset, content, input_copy });
                             } else {
-                                std.debug.print("\r{s: <50}\r{s}: {s}\n> ", .{ " ", display_prefix, content });
+                                std.debug.print("\r{s}{s}: {s}\n> {s}", .{ clear_line, display_prefix, content, input_copy });
                             }
                         }
                     }
                 },
                 .EOSE => {
                     if (self.debug_mode) {
-                        std.debug.print("\r[{s}] Ready for real-time messages\n> ", .{relay_url});
+                        self.input_mutex.lock();
+                        const input_copy = self.allocator.dupe(u8, self.input_buffer.items) catch "";
+                        self.input_mutex.unlock();
+                        defer if (input_copy.len > 0) self.allocator.free(input_copy);
+                        std.debug.print("\r\x1b[2K[{s}] Ready for real-time messages\n> {s}", .{ relay_url, input_copy });
                     }
                 },
                 .NOTICE => {
                     if (self.debug_mode) {
                         if (message.content) |content| {
-                            std.debug.print("\r[{s}] NOTICE: {s}\n> ", .{ relay_url, content });
+                            self.input_mutex.lock();
+                            const input_copy = self.allocator.dupe(u8, self.input_buffer.items) catch "";
+                            self.input_mutex.unlock();
+                            defer if (input_copy.len > 0) self.allocator.free(input_copy);
+                            std.debug.print("\r\x1b[2K[{s}] NOTICE: {s}\n> {s}", .{ relay_url, content, input_copy });
                         }
                     }
                 },
@@ -454,11 +477,16 @@ pub const InteractiveClient = struct {
                             }
                             
                             if (is_ours) {
+                                self.input_mutex.lock();
+                                const input_copy = self.allocator.dupe(u8, self.input_buffer.items) catch "";
+                                self.input_mutex.unlock();
+                                defer if (input_copy.len > 0) self.allocator.free(input_copy);
+                                
                                 if (message.ok_status orelse false) {
-                                    std.debug.print("\r{s} [{s}] Accepted our event\n> ", .{ symbol, relay_url });
+                                    std.debug.print("\r\x1b[2K{s} [{s}] Accepted our event\n> {s}", .{ symbol, relay_url, input_copy });
                                 } else {
                                     const reason = message.content orelse "unknown reason";
-                                    std.debug.print("\r{s} [{s}] Rejected: {s}\n> ", .{ symbol, relay_url, reason });
+                                    std.debug.print("\r\x1b[2K{s} [{s}] Rejected: {s}\n> {s}", .{ symbol, relay_url, reason, input_copy });
                                 }
                             }
                         }
@@ -467,7 +495,11 @@ pub const InteractiveClient = struct {
                 .AUTH => {
                     // Note: AUTH handling should be done in the relay thread
                     if (self.debug_mode and message.content != null) {
-                        std.debug.print("\r[{s}] AUTH challenge: {s}\n> ", .{ relay_url, message.content.? });
+                        self.input_mutex.lock();
+                        const input_copy = self.allocator.dupe(u8, self.input_buffer.items) catch "";
+                        self.input_mutex.unlock();
+                        defer if (input_copy.len > 0) self.allocator.free(input_copy);
+                        std.debug.print("\r\x1b[2K[{s}] AUTH challenge: {s}\n> {s}", .{ relay_url, message.content.?, input_copy });
                     }
                 },
                 else => {},
@@ -511,6 +543,45 @@ pub const InteractiveClient = struct {
         }
     }
 
+    fn enableRawMode(self: *Self) !void {
+        const stdin = std.io.getStdIn();
+        
+        // Get current terminal settings
+        var termios = try std.posix.tcgetattr(stdin.handle);
+        
+        // Save original settings
+        self.original_termios = termios;
+        
+        // Modify flags for raw mode
+        // Disable canonical mode (line buffering) and echo
+        termios.lflag.ICANON = false;
+        termios.lflag.ECHO = false;
+        termios.lflag.ECHONL = false;
+        termios.lflag.ISIG = false; // Disable Ctrl-C, Ctrl-Z signals
+        termios.lflag.IEXTEN = false;
+        
+        // Disable input processing
+        termios.iflag.IXON = false; // Disable Ctrl-S, Ctrl-Q
+        termios.iflag.ICRNL = false; // Don't translate CR to NL
+        termios.iflag.BRKINT = false;
+        termios.iflag.INPCK = false;
+        termios.iflag.ISTRIP = false;
+        
+        // Set minimum characters and timeout
+        termios.cc[@intFromEnum(std.posix.V.TIME)] = 0; // No timeout
+        termios.cc[@intFromEnum(std.posix.V.MIN)] = 1; // Read 1 character at a time
+        
+        // Apply the new settings
+        try std.posix.tcsetattr(stdin.handle, .FLUSH, termios);
+    }
+    
+    fn disableRawMode(self: *Self) void {
+        if (self.original_termios) |termios| {
+            const stdin = std.io.getStdIn();
+            std.posix.tcsetattr(stdin.handle, .FLUSH, termios) catch {};
+        }
+    }
+    
     fn showUserList(self: *Self) void {
         self.users_mutex.lock();
         defer self.users_mutex.unlock();
@@ -538,58 +609,126 @@ pub const InteractiveClient = struct {
     }
 
     fn inputLoop(self: *Self) !void {
-        const stdin = std.io.getStdIn().reader();
-        var buf: [1024]u8 = undefined;
-
+        const stdin = std.io.getStdIn();
+        const stdout = std.io.getStdOut().writer();
+        
+        // Enable raw mode
+        try self.enableRawMode();
+        defer self.disableRawMode();
+        
+        // Initial prompt
+        try stdout.print("> ", .{});
+        
         while (self.running.load(.monotonic)) {
-            std.debug.print("> ", .{});
-
-            if (try stdin.readUntilDelimiterOrEof(&buf, '\n')) |input| {
-                const trimmed = std.mem.trim(u8, input, " \t\r\n");
-
-                if (trimmed.len == 0) continue;
-
+            var char_buf: [1]u8 = undefined;
+            const bytes_read = stdin.read(&char_buf) catch |err| {
+                if (err == error.WouldBlock) {
+                    std.time.sleep(10_000_000); // 10ms
+                    continue;
+                }
+                return err;
+            };
+            
+            if (bytes_read == 0) {
+                std.time.sleep(10_000_000); // 10ms
+                continue;
+            }
+            
+            const char = char_buf[0];
+            
+            // Handle special characters
+            if (char == '\r' or char == '\n') { // Enter key (CR or LF)
+                // Process the command
+                self.input_mutex.lock();
+                const input_copy = self.allocator.dupe(u8, self.input_buffer.items) catch "";
+                self.input_buffer.clearRetainingCapacity();
+                self.input_mutex.unlock();
+                defer if (input_copy.len > 0) self.allocator.free(input_copy);
+                
+                const trimmed = std.mem.trim(u8, input_copy, " \t\r\n");
+                
+                if (trimmed.len == 0) {
+                    try stdout.print("\n> ", .{});
+                    continue;
+                }
+                
                 if (std.mem.eql(u8, trimmed, "/quit")) {
-                    std.debug.print("Goodbye!\n", .{});
+                    try stdout.print("\nGoodbye!\n", .{});
                     break;
                 } else if (std.mem.eql(u8, trimmed, "/users")) {
+                    try stdout.print("\n", .{});
                     self.showUserList();
                     continue;
                 } else if (std.mem.eql(u8, trimmed, "/blocks")) {
+                    try stdout.print("\n", .{});
                     self.showBlockedList();
                     continue;
                 } else if (std.mem.startsWith(u8, trimmed, "/block ") or std.mem.startsWith(u8, trimmed, "/b ")) {
-                    const space_idx = std.mem.indexOf(u8, trimmed, " ") orelse continue;
+                    const space_idx = std.mem.indexOf(u8, trimmed, " ") orelse {
+                        try stdout.print("\n> ", .{});
+                        continue;
+                    };
                     const user_id = std.mem.trim(u8, trimmed[space_idx + 1 ..], " \t");
                     if (user_id.len > 0) {
+                        try stdout.print("\n", .{});
                         try self.blockUser(user_id);
                     } else {
-                        std.debug.print("Usage: /block <user_id> or /b <user_id>\n", .{});
+                        try stdout.print("\nUsage: /block <user_id> or /b <user_id>\n> ", .{});
                     }
                     continue;
                 } else if (std.mem.startsWith(u8, trimmed, "/unblock ")) {
-                    const space_idx = std.mem.indexOf(u8, trimmed, " ") orelse continue;
+                    const space_idx = std.mem.indexOf(u8, trimmed, " ") orelse {
+                        try stdout.print("\n> ", .{});
+                        continue;
+                    };
                     const user_id = std.mem.trim(u8, trimmed[space_idx + 1 ..], " \t");
                     if (user_id.len > 0) {
+                        try stdout.print("\n", .{});
                         try self.unblockUser(user_id);
                     } else {
-                        std.debug.print("Usage: /unblock <user_id>\n", .{});
+                        try stdout.print("\nUsage: /unblock <user_id>\n> ", .{});
                     }
                     continue;
                 }
-
-                // Clear the line after enter is pressed to avoid duplicate display
-                std.debug.print("\r{s: <80}\r", .{" "});
                 
-                // Send message
+                // Clear the line and send message
+                try stdout.print("\r\x1b[2K", .{}); // Clear entire line
                 try self.sendMessage(trimmed);
-                // Message will be displayed when echo comes back
-            } else {
-                // EOF (Ctrl-D)
+                
+            } else if (char == 127 or char == 8) { // Backspace (DEL or BS)
+                self.input_mutex.lock();
+                if (self.input_buffer.items.len > 0) {
+                    _ = self.input_buffer.pop();
+                    // Move cursor back, clear to end of line, redraw
+                    try stdout.print("\r\x1b[2K> {s}", .{self.input_buffer.items});
+                }
+                self.input_mutex.unlock();
+            } else if (char == 3) { // Ctrl-C
+                try stdout.print("\n", .{});
                 break;
+            } else if (char == 4) { // Ctrl-D (EOF)
+                if (self.input_buffer.items.len == 0) {
+                    try stdout.print("\n", .{});
+                    break;
+                }
+            } else if (char >= 32 and char < 127) { // Printable characters
+                self.input_mutex.lock();
+                self.input_buffer.append(char) catch {};
+                self.input_mutex.unlock();
+                // Echo the character
+                try stdout.writeByte(char);
+            } else if (char == 27) { // ESC sequence (arrow keys, etc.)
+                // Read next two bytes for arrow keys
+                var seq: [2]u8 = undefined;
+                if (stdin.read(&seq) catch 0 == 2) {
+                    if (seq[0] == '[') {
+                        // Handle arrow keys if needed
+                        // For now, just ignore them
+                    }
+                }
             }
         }
-
+        
         self.running.store(false, .monotonic);
     }
 
@@ -919,9 +1058,16 @@ pub const InteractiveClient = struct {
 
     pub fn deinit(self: *Self) void {
         self.running.store(false, .monotonic);
+        
+        // Restore terminal to original mode
+        self.disableRawMode();
+        
         if (!std.mem.eql(u8, self.username, "anon")) {
             self.allocator.free(self.username);
         }
+        
+        // Clean up input buffer
+        self.input_buffer.deinit();
         
         // Clean up seen events map
         self.seen_mutex.lock();
