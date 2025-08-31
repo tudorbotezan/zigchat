@@ -18,6 +18,8 @@ pub const InteractiveClient = struct {
     seen_mutex: std.Thread.Mutex,
     known_users: std.hash_map.StringHashMap([]const u8), // Map of pubkey -> nickname
     users_mutex: std.Thread.Mutex,
+    blocked_users: std.hash_map.StringHashMap(void), // Track blocked user public keys
+    blocked_mutex: std.Thread.Mutex,
 
     const Self = @This();
 
@@ -184,11 +186,20 @@ pub const InteractiveClient = struct {
             .seen_mutex = .{},
             .known_users = std.hash_map.StringHashMap([]const u8).init(allocator),
             .users_mutex = .{},
+            .blocked_users = std.hash_map.StringHashMap(void).init(allocator),
+            .blocked_mutex = .{},
         };
         
         // Initialize last_sent_ids
         @memset(&client.last_sent_ids[0], 0);
         @memset(&client.last_sent_ids[1], 0);
+        
+        // Load blocked users from file
+        client.loadBlockedUsers() catch |err| {
+            if (debug_mode) {
+                std.debug.print("Could not load blocked users: {}\n", .{err});
+            }
+        };
         
         return client;
     }
@@ -222,6 +233,9 @@ pub const InteractiveClient = struct {
         std.debug.print("Commands:\n", .{});
         std.debug.print("  Type a message and press Enter to send\n", .{});
         std.debug.print("  /users - Show active users with their tags\n", .{});
+        std.debug.print("  /block <id> or /b <id> - Block a user (by pubkey, #tag, or name#tag)\n", .{});
+        std.debug.print("  /unblock <id> - Unblock a user\n", .{});
+        std.debug.print("  /blocks - List blocked users\n", .{});
         std.debug.print("  /quit or Ctrl-C to exit\n", .{});
         std.debug.print("{s}\n\n", .{"-" ** 50});
 
@@ -314,6 +328,17 @@ pub const InteractiveClient = struct {
             switch (message.type) {
                 .EVENT => {
                     if (message.content) |content| {
+                        // Check if user is blocked
+                        if (message.author) |author| {
+                            self.blocked_mutex.lock();
+                            const is_blocked = self.blocked_users.contains(author);
+                            self.blocked_mutex.unlock();
+                            
+                            if (is_blocked) {
+                                continue; // Skip messages from blocked users
+                            }
+                        }
+                        
                         // Check if this is our own event coming back
                         var is_our_echo = false;
                         if (message.id) |msg_id| {
@@ -508,6 +533,27 @@ pub const InteractiveClient = struct {
                 } else if (std.mem.eql(u8, trimmed, "/users")) {
                     self.showUserList();
                     continue;
+                } else if (std.mem.eql(u8, trimmed, "/blocks")) {
+                    self.showBlockedList();
+                    continue;
+                } else if (std.mem.startsWith(u8, trimmed, "/block ") or std.mem.startsWith(u8, trimmed, "/b ")) {
+                    const space_idx = std.mem.indexOf(u8, trimmed, " ") orelse continue;
+                    const user_id = std.mem.trim(u8, trimmed[space_idx + 1 ..], " \t");
+                    if (user_id.len > 0) {
+                        try self.blockUser(user_id);
+                    } else {
+                        std.debug.print("Usage: /block <user_id> or /b <user_id>\n", .{});
+                    }
+                    continue;
+                } else if (std.mem.startsWith(u8, trimmed, "/unblock ")) {
+                    const space_idx = std.mem.indexOf(u8, trimmed, " ") orelse continue;
+                    const user_id = std.mem.trim(u8, trimmed[space_idx + 1 ..], " \t");
+                    if (user_id.len > 0) {
+                        try self.unblockUser(user_id);
+                    } else {
+                        std.debug.print("Usage: /unblock <user_id>\n", .{});
+                    }
+                    continue;
                 }
 
                 // Send message
@@ -592,6 +638,262 @@ pub const InteractiveClient = struct {
         @memset(&self.last_sent_ids[1], 0); // Clear second ID since we only send one event now
     }
 
+    fn blockUser(self: *Self, user_id: []const u8) !void {
+        // Try to resolve the user ID to a public key
+        const pubkey = self.resolveUserToPubkey(user_id) catch null;
+        
+        if (pubkey == null) {
+            std.debug.print("User not found: {s}\n", .{user_id});
+            std.debug.print("You can use: full pubkey, #tag (e.g., #79be), or username#tag\n", .{});
+            return;
+        }
+        
+        self.blocked_mutex.lock();
+        
+        // Check if already blocked
+        if (self.blocked_users.contains(pubkey.?)) {
+            self.blocked_mutex.unlock();
+            std.debug.print("User already blocked: {s}\n", .{user_id});
+            return;
+        }
+        
+        // Add to blocked list
+        const pubkey_copy = try self.allocator.dupe(u8, pubkey.?);
+        try self.blocked_users.put(pubkey_copy, {});
+        
+        self.blocked_mutex.unlock();
+        
+        // Save to file (without holding the lock)
+        self.saveBlockedUsers() catch |err| {
+            if (self.debug_mode) {
+                std.debug.print("Failed to save blocked users: {}\n", .{err});
+            }
+        };
+        
+        std.debug.print("Blocked user: {s}\n", .{user_id});
+        if (pubkey.?.len > 16) {
+            std.debug.print("  Pubkey: {s}...\n", .{pubkey.?[0..16]});
+        }
+    }
+    
+    fn unblockUser(self: *Self, user_id: []const u8) !void {
+        // Try to resolve the user ID to a public key
+        const pubkey = self.resolveUserToPubkey(user_id) catch null;
+        
+        if (pubkey == null) {
+            // If not found in known users, try as raw pubkey
+            if (user_id.len == 64) {
+                self.blocked_mutex.lock();
+                
+                if (self.blocked_users.fetchRemove(user_id)) |entry| {
+                    self.allocator.free(entry.key);
+                    self.blocked_mutex.unlock();
+                    
+                    // Save to file (without holding the lock)
+                    self.saveBlockedUsers() catch |err| {
+                        if (self.debug_mode) {
+                            std.debug.print("Failed to save blocked users: {}\n", .{err});
+                        }
+                    };
+                    
+                    std.debug.print("Unblocked user: {s}\n", .{user_id});
+                    return;
+                } else {
+                    self.blocked_mutex.unlock();
+                }
+            }
+            
+            std.debug.print("User not found in block list: {s}\n", .{user_id});
+            return;
+        }
+        
+        self.blocked_mutex.lock();
+        
+        if (self.blocked_users.fetchRemove(pubkey.?)) |entry| {
+            self.allocator.free(entry.key);
+            self.blocked_mutex.unlock();
+            
+            // Save to file (without holding the lock)
+            self.saveBlockedUsers() catch |err| {
+                if (self.debug_mode) {
+                    std.debug.print("Failed to save blocked users: {}\n", .{err});
+                }
+            };
+            
+            std.debug.print("Unblocked user: {s}\n", .{user_id});
+        } else {
+            self.blocked_mutex.unlock();
+            std.debug.print("User not in block list: {s}\n", .{user_id});
+        }
+    }
+    
+    fn showBlockedList(self: *Self) void {
+        self.blocked_mutex.lock();
+        defer self.blocked_mutex.unlock();
+        
+        std.debug.print("\n=== Blocked Users ===\n", .{});
+        
+        if (self.blocked_users.count() == 0) {
+            std.debug.print("  No blocked users\n", .{});
+            std.debug.print("{s}\n> ", .{"-" ** 30});
+            return;
+        }
+        
+        var iter = self.blocked_users.iterator();
+        var count: usize = 0;
+        while (iter.next()) |entry| {
+            const pubkey = entry.key_ptr.*;
+            
+            // Try to find nickname for this pubkey
+            self.users_mutex.lock();
+            const nickname = self.known_users.get(pubkey);
+            self.users_mutex.unlock();
+            
+            if (nickname) |nick| {
+                if (pubkey.len >= 4) {
+                    std.debug.print("  {s}#{s} ({s}...)\n", .{ nick, pubkey[0..4], pubkey[0..16] });
+                }
+            } else {
+                if (pubkey.len >= 16) {
+                    std.debug.print("  #{s} ({s}...)\n", .{ pubkey[0..4], pubkey[0..16] });
+                }
+            }
+            count += 1;
+        }
+        
+        std.debug.print("\nTotal: {} blocked users\n", .{count});
+        std.debug.print("{s}\n> ", .{"-" ** 30});
+    }
+    
+    fn resolveUserToPubkey(self: *Self, user_id: []const u8) !?[]const u8 {
+        // Check if it's a full pubkey (64 hex chars)
+        if (user_id.len == 64) {
+            // Verify it's valid hex
+            for (user_id) |c| {
+                if (!std.ascii.isHex(c)) {
+                    return null;
+                }
+            }
+            return user_id;
+        }
+        
+        // Check if it's a #tag format (e.g., #79be)
+        if (user_id[0] == '#' and user_id.len >= 2) {
+            const tag = user_id[1..];
+            
+            self.users_mutex.lock();
+            defer self.users_mutex.unlock();
+            
+            // Search for matching pubkey by tag prefix
+            var iter = self.known_users.iterator();
+            while (iter.next()) |entry| {
+                const pubkey = entry.key_ptr.*;
+                if (std.mem.startsWith(u8, pubkey, tag)) {
+                    return pubkey;
+                }
+            }
+        }
+        
+        // Check if it's username#tag format
+        if (std.mem.indexOf(u8, user_id, "#")) |hash_idx| {
+            const username = user_id[0..hash_idx];
+            const tag = user_id[hash_idx + 1 ..];
+            
+            self.users_mutex.lock();
+            defer self.users_mutex.unlock();
+            
+            // Search for matching user
+            var iter = self.known_users.iterator();
+            while (iter.next()) |entry| {
+                const pubkey = entry.key_ptr.*;
+                const nick = entry.value_ptr.*;
+                
+                if (std.mem.eql(u8, nick, username) and std.mem.startsWith(u8, pubkey, tag)) {
+                    return pubkey;
+                }
+            }
+        }
+        
+        return null;
+    }
+    
+    fn loadBlockedUsers(self: *Self) !void {
+        // Get home directory
+        const home = std.process.getEnvVarOwned(self.allocator, "HOME") catch return error.NoHomeDir;
+        defer self.allocator.free(home);
+        
+        // Build path to blocked users file
+        var path_buf: [1024]u8 = undefined;
+        const config_dir = try std.fmt.bufPrint(&path_buf, "{s}/.zigchat", .{home});
+        
+        // Create directory if it doesn't exist
+        std.fs.makeDirAbsolute(config_dir) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+        
+        var file_path_buf: [1024]u8 = undefined;
+        const file_path = try std.fmt.bufPrint(&file_path_buf, "{s}/blocked_users.txt", .{config_dir});
+        
+        // Try to open the file
+        const file = std.fs.openFileAbsolute(file_path, .{}) catch |err| switch (err) {
+            error.FileNotFound => return, // No blocked users yet
+            else => return err,
+        };
+        defer file.close();
+        
+        // Read the file
+        const content = try file.readToEndAlloc(self.allocator, 1024 * 1024);
+        defer self.allocator.free(content);
+        
+        // Parse each line as a pubkey
+        var lines = std.mem.tokenizeAny(u8, content, "\n\r");
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, " \t");
+            if (trimmed.len == 64) {
+                const pubkey_copy = try self.allocator.dupe(u8, trimmed);
+                try self.blocked_users.put(pubkey_copy, {});
+            }
+        }
+        
+        if (self.debug_mode and self.blocked_users.count() > 0) {
+            std.debug.print("Loaded {} blocked users\n", .{self.blocked_users.count()});
+        }
+    }
+    
+    fn saveBlockedUsers(self: *Self) !void {
+        // Get home directory
+        const home = std.process.getEnvVarOwned(self.allocator, "HOME") catch return error.NoHomeDir;
+        defer self.allocator.free(home);
+        
+        // Build path to blocked users file
+        var path_buf: [1024]u8 = undefined;
+        const config_dir = try std.fmt.bufPrint(&path_buf, "{s}/.zigchat", .{home});
+        
+        // Create directory if it doesn't exist
+        std.fs.makeDirAbsolute(config_dir) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+        
+        var file_path_buf: [1024]u8 = undefined;
+        const file_path = try std.fmt.bufPrint(&file_path_buf, "{s}/blocked_users.txt", .{config_dir});
+        
+        // Create/overwrite the file
+        const file = try std.fs.createFileAbsolute(file_path, .{});
+        defer file.close();
+        
+        // Write each blocked pubkey on a new line
+        self.blocked_mutex.lock();
+        defer self.blocked_mutex.unlock();
+        
+        var iter = self.blocked_users.iterator();
+        while (iter.next()) |entry| {
+            const pubkey = entry.key_ptr.*;
+            try file.writer().print("{s}\n", .{pubkey});
+        }
+    }
+
     pub fn deinit(self: *Self) void {
         self.running.store(false, .monotonic);
         if (!std.mem.eql(u8, self.username, "anon")) {
@@ -616,6 +918,15 @@ pub const InteractiveClient = struct {
         }
         self.known_users.deinit();
         self.users_mutex.unlock();
+        
+        // Clean up blocked users map
+        self.blocked_mutex.lock();
+        var blocked_iter = self.blocked_users.iterator();
+        while (blocked_iter.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.blocked_users.deinit();
+        self.blocked_mutex.unlock();
         
         // Clean up message queue
         self.message_queue.deinit();
