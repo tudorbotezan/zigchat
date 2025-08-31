@@ -3,6 +3,7 @@ zig-cache/
 zig-out/
 .zig-cache/
 .claude/
+
 # Compiled object files, libraries and executables
 *.o
 *.a

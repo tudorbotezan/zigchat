@@ -5,7 +5,7 @@
 # Usage: ./connect.sh [geohash] [relay] [--debug]
 
 GEOHASH="${1:-9q}"
-RELAY="${2:-wss://relay.damus.io}"
+# RELAY="${2:-wss://relay.damus.io}"
 DEBUG=""
 
 # Check for debug flag in any position
@@ -22,5 +22,5 @@ if [ -n "$DEBUG" ]; then
 fi
 echo ""
 
-# Use 'chat' for interactive mode, pass debug flag if present
-./zig-out/bin/zigchat chat "$GEOHASH" "$RELAY" $DEBUG
+# Use 'chat' for interactive mode, pass debug flag if present   ## "$RELAY" rm from cmnd
+./zig-out/bin/zigchat chat "$GEOHASH" $DEBUG
