@@ -578,6 +578,9 @@ pub const InteractiveClient = struct {
                     continue;
                 }
 
+                // Clear the line after enter is pressed to avoid duplicate display
+                std.debug.print("\r{s: <80}\r", .{" "});
+                
                 // Send message
                 try self.sendMessage(trimmed);
                 // Message will be displayed when echo comes back
