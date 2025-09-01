@@ -20,7 +20,7 @@ jobs:
       - name: Set up Zig
         uses: goto-bus-stop/setup-zig@v2
         with:
-          zig-version: ${{ matrix.zig }}
+          version: ${{ matrix.zig }}
 
       - name: Install deps (Linux)
         if: startsWith(matrix.os, 'ubuntu')
