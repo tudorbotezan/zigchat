@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        zig: ['0.13.0']
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          zig-version: ${{ matrix.zig }}
+
+      - name: Install deps (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsecp256k1-dev pkg-config
+
+      - name: Install deps (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          brew update
+          brew install secp256k1 pkg-config
+
+      - name: Install deps (Windows via vcpkg)
+        if: startsWith(matrix.os, 'windows')
+        shell: bash
+        run: |
+          git clone --depth 1 https://github.com/microsoft/vcpkg C:/vcpkg
+          C:/vcpkg/bootstrap-vcpkg.bat
+          C:/vcpkg/vcpkg install secp256k1:x64-windows
+          echo "C:/vcpkg/installed/x64-windows/include" >> $GITHUB_PATH
+          echo "C:/vcpkg/installed/x64-windows/lib" >> $GITHUB_PATH
+
+      - name: Build (ReleaseSafe)
+        run: zig build -Doptimize=ReleaseSafe
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zigchat-${{ runner.os }}-${{ github.sha }}
+          path: zig-out/bin/**
