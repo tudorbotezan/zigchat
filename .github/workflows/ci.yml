@@ -46,7 +46,12 @@ jobs:
           echo "C:/vcpkg/installed/x64-windows/include" >> $GITHUB_PATH
           echo "C:/vcpkg/installed/x64-windows/lib" >> $GITHUB_PATH
 
-      - name: Build (ReleaseSafe)
+      - name: Build (ReleaseSafe - Windows)
+        if: startsWith(matrix.os, 'windows')
+        run: zig build -Doptimize=ReleaseSafe -Dsecp256k1_include="C:/vcpkg/installed/x64-windows/include" -Dsecp256k1_lib="C:/vcpkg/installed/x64-windows/lib"
+        
+      - name: Build (ReleaseSafe - Unix)
+        if: "!startsWith(matrix.os, 'windows')"
         run: zig build -Doptimize=ReleaseSafe
 
       - name: Upload build artifact

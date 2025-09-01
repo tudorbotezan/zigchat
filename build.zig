@@ -3,6 +3,10 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    
+    // Windows-specific options for secp256k1
+    const secp256k1_include = b.option([]const u8, "secp256k1_include", "Path to secp256k1 include directory");
+    const secp256k1_lib = b.option([]const u8, "secp256k1_lib", "Path to secp256k1 lib directory");
 
     // Add ws module from lib/ws
     const ws_module = b.addModule("ws", .{
@@ -18,8 +22,17 @@ pub fn build(b: *std.Build) void {
 
     exe.root_module.addImport("ws", ws_module);
     
-    // Link with C libraries - let pkg-config handle the paths
+    // Link with C libraries
     exe.linkLibC();
+    
+    // Windows-specific library paths
+    if (secp256k1_include) |inc| {
+        exe.addIncludePath(.{ .cwd_relative = inc });
+    }
+    if (secp256k1_lib) |lib| {
+        exe.addLibraryPath(.{ .cwd_relative = lib });
+    }
+    
     exe.linkSystemLibrary("secp256k1");
 
     b.installArtifact(exe);
@@ -42,8 +55,17 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Link with C libraries - let pkg-config handle the paths
+    // Link with C libraries
     test_exe.linkLibC();
+    
+    // Windows-specific library paths
+    if (secp256k1_include) |inc| {
+        test_exe.addIncludePath(.{ .cwd_relative = inc });
+    }
+    if (secp256k1_lib) |lib| {
+        test_exe.addLibraryPath(.{ .cwd_relative = lib });
+    }
+    
     test_exe.linkSystemLibrary("secp256k1");
 
     b.installArtifact(test_exe);
@@ -61,6 +83,15 @@ pub fn build(b: *std.Build) void {
     });
 
     exe_unit_tests.linkLibC();
+    
+    // Windows-specific library paths
+    if (secp256k1_include) |inc| {
+        exe_unit_tests.addIncludePath(.{ .cwd_relative = inc });
+    }
+    if (secp256k1_lib) |lib| {
+        exe_unit_tests.addLibraryPath(.{ .cwd_relative = lib });
+    }
+    
     exe_unit_tests.linkSystemLibrary("secp256k1");
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
