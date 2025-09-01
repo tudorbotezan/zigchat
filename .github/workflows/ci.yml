@@ -38,8 +38,10 @@ jobs:
         if: startsWith(matrix.os, 'windows')
         shell: bash
         run: |
-          git clone --depth 1 https://github.com/microsoft/vcpkg C:/vcpkg
-          C:/vcpkg/bootstrap-vcpkg.bat
+          if [ ! -d "C:/vcpkg" ]; then
+            git clone --depth 1 https://github.com/microsoft/vcpkg C:/vcpkg
+            C:/vcpkg/bootstrap-vcpkg.bat
+          fi
           C:/vcpkg/vcpkg install secp256k1:x64-windows
           echo "C:/vcpkg/installed/x64-windows/include" >> $GITHUB_PATH
           echo "C:/vcpkg/installed/x64-windows/lib" >> $GITHUB_PATH
