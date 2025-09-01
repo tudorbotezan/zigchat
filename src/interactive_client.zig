@@ -4,6 +4,8 @@ const nostr_crypto = @import("nostr_crypto.zig");
 const MessageQueue = @import("message_queue.zig").MessageQueue;
 const builtin = @import("builtin");
 const os = std.os;
+const AccountStore = @import("account_store.zig").AccountStore;
+const Account = @import("account_store.zig").Account;
 pub const InteractiveClient = struct {
     allocator: std.mem.Allocator,
     relays: std.ArrayList(NostrWsClient),
@@ -33,37 +35,153 @@ pub const InteractiveClient = struct {
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator, channel: []const u8, primary_relay: []const u8, debug_mode: bool) Self {
-        // Ask for username
         const stdin = std.io.getStdIn().reader();
         const stdout = std.io.getStdOut().writer();
 
-        stdout.print("Enter your username: ", .{}) catch {};
-        var username_buf: [64]u8 = undefined;
+        // Load or create account
+        var store = AccountStore.init(allocator);
         var username: []const u8 = "anon";
-        if (stdin.readUntilDelimiterOrEof(&username_buf, '\n') catch null) |input| {
-            const trimmed = std.mem.trim(u8, input, " \t\r\n");
-            if (trimmed.len > 0) {
-                username = allocator.dupe(u8, trimmed) catch "anon";
-            }
+        var keypair: nostr_crypto.KeyPair = undefined;
+
+        var accounts = store.listAccounts() catch std.ArrayList(Account).init(allocator);
+        defer {
+            // free account names
+            for (accounts.items) |acc| allocator.free(acc.name);
+            accounts.deinit();
         }
 
-        // Generate a keypair for this session
-        const keypair = nostr_crypto.KeyPair.generate() catch blk: {
-            std.debug.print("Failed to generate keypair, using test keypair\n", .{});
-            // Fallback to a known test keypair
-            var test_keypair: nostr_crypto.KeyPair = undefined;
-            @memset(&test_keypair.private_key, 0);
-            test_keypair.private_key[31] = 1;
-            const pubkey_hex = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
-            _ = std.fmt.hexToBytes(&test_keypair.public_key, pubkey_hex) catch unreachable;
-            break :blk test_keypair;
-        };
+        if (accounts.items.len > 0) {
+            stdout.print("Select account or 0 to create new:\n", .{}) catch {};
+            // Display list
+            var i: usize = 0;
+            while (i < accounts.items.len) : (i += 1) {
+                stdout.print("  {}: {s}\n", .{ i + 1, accounts.items[i].name }) catch {};
+            }
+            stdout.print("Choice [1-{} | 0]: ", .{accounts.items.len}) catch {};
 
-        // Only show in debug mode
+            var choice_buf: [16]u8 = undefined;
+            var selection: usize = 0;
+            if (stdin.readUntilDelimiterOrEof(&choice_buf, '\n') catch null) |raw| {
+                const t = std.mem.trim(u8, raw, " \t\r\n");
+                if (t.len > 0) {
+                    selection = std.fmt.parseInt(usize, t, 10) catch 0;
+                }
+            }
+
+            if (selection >= 1 and selection <= accounts.items.len) {
+                const picked = accounts.items[selection - 1];
+                const priv_hex = store.loadPrivateKeyHex(picked.name) catch null;
+                if (priv_hex) |hex| {
+                    defer allocator.free(hex);
+                    username = allocator.dupe(u8, picked.name) catch "anon";
+                    keypair = nostr_crypto.KeyPair.fromHex(hex) catch blk: {
+                        std.debug.print("Invalid stored key; generating new one.\n", .{});
+                        break :blk nostr_crypto.KeyPair.generate() catch blk2: {
+                            // Fallback to a known test keypair
+                            var test_keypair: nostr_crypto.KeyPair = undefined;
+                            @memset(&test_keypair.private_key, 0);
+                            test_keypair.private_key[31] = 1;
+                            const pubkey_hex = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+                            _ = std.fmt.hexToBytes(&test_keypair.public_key, pubkey_hex) catch unreachable;
+                            break :blk2 test_keypair;
+                        };
+                    };
+                } else {
+                    std.debug.print("Failed to load account; generating new one.\n", .{});
+                    const new = nostr_crypto.KeyPair.generate() catch blk2: {
+                        var test_keypair: nostr_crypto.KeyPair = undefined;
+                        @memset(&test_keypair.private_key, 0);
+                        test_keypair.private_key[31] = 1;
+                        const pubkey_hex = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+                        _ = std.fmt.hexToBytes(&test_keypair.public_key, pubkey_hex) catch unreachable;
+                        break :blk2 test_keypair;
+                    };
+                    keypair = new;
+                }
+            } else {
+                // New account flow
+                stdout.print("Enter new username: ", .{}) catch {};
+                var username_buf: [64]u8 = undefined;
+                var entered: []const u8 = "anon";
+                if (stdin.readUntilDelimiterOrEof(&username_buf, '\n') catch null) |input| {
+                    const trimmed = std.mem.trim(u8, input, " \t\r\n");
+                    if (trimmed.len > 0) entered = trimmed;
+                }
+                const sanitized_alloc = store.sanitizeName(entered) catch entered;
+                const sanitized_is_alloc = !std.mem.eql(u8, sanitized_alloc, entered);
+                defer if (sanitized_is_alloc) allocator.free(sanitized_alloc);
+
+                username = allocator.dupe(u8, sanitized_alloc) catch "anon";
+                keypair = nostr_crypto.KeyPair.generate() catch blk2: {
+                    var test_keypair: nostr_crypto.KeyPair = undefined;
+                    @memset(&test_keypair.private_key, 0);
+                    test_keypair.private_key[31] = 1;
+                    const pubkey_hex = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+                    _ = std.fmt.hexToBytes(&test_keypair.public_key, pubkey_hex) catch unreachable;
+                    break :blk2 test_keypair;
+                };
+
+                // Save account file; avoid clobber by adding suffix if exists
+                var final_name = username;
+                var name_changed = false;
+                var suffix: usize = 2;
+                while (store.accountExists(final_name)) : (suffix += 1) {
+                    const candidate = std.fmt.allocPrint(allocator, "{s}-{d}", .{ username, suffix }) catch break;
+                    if (!store.accountExists(candidate)) {
+                        final_name = candidate;
+                        name_changed = true;
+                        break;
+                    }
+                    allocator.free(candidate);
+                }
+
+                // Convert privkey to hex
+                var priv_hex_buf: [64]u8 = undefined;
+                const priv_hex_str = std.fmt.bufPrint(&priv_hex_buf, "{}", .{std.fmt.fmtSliceHexLower(&keypair.private_key)}) catch "";
+                store.savePrivateKeyHex(final_name, priv_hex_str) catch {
+                    if (debug_mode) std.debug.print("Warning: failed to save account.\n", .{});
+                };
+                // If we modified name, keep username consistent
+                if (name_changed) {
+                    allocator.free(username);
+                    username = allocator.dupe(u8, final_name) catch username;
+                    allocator.free(final_name);
+                }
+            }
+        } else {
+            // No accounts exist yet: create one
+            stdout.print("Enter your username: ", .{}) catch {};
+            var username_buf: [64]u8 = undefined;
+            var entered: []const u8 = "anon";
+            if (stdin.readUntilDelimiterOrEof(&username_buf, '\n') catch null) |input| {
+                const trimmed = std.mem.trim(u8, input, " \t\r\n");
+                if (trimmed.len > 0) entered = trimmed;
+            }
+            const sanitized_alloc = store.sanitizeName(entered) catch entered;
+            const sanitized_is_alloc = !std.mem.eql(u8, sanitized_alloc, entered);
+            defer if (sanitized_is_alloc) allocator.free(sanitized_alloc);
+            username = allocator.dupe(u8, sanitized_alloc) catch "anon";
+
+            keypair = nostr_crypto.KeyPair.generate() catch blk2: {
+                var test_keypair: nostr_crypto.KeyPair = undefined;
+                @memset(&test_keypair.private_key, 0);
+                test_keypair.private_key[31] = 1;
+                const pubkey_hex = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+                _ = std.fmt.hexToBytes(&test_keypair.public_key, pubkey_hex) catch unreachable;
+                break :blk2 test_keypair;
+            };
+            var priv_hex_buf: [64]u8 = undefined;
+            const priv_hex_str = std.fmt.bufPrint(&priv_hex_buf, "{}", .{std.fmt.fmtSliceHexLower(&keypair.private_key)}) catch "";
+            store.savePrivateKeyHex(username, priv_hex_str) catch {
+                if (debug_mode) std.debug.print("Warning: failed to save account.\n", .{});
+            };
+        }
+
         if (debug_mode) {
-            std.debug.print("Generated keypair for this session\n", .{});
+            std.debug.print("Using account '{s}'\n", .{username});
             std.debug.print("Public key: {s}\n", .{std.fmt.fmtSliceHexLower(&keypair.public_key)});
         }
+        
 
         // Load geohash-specific relays
         var relays = std.ArrayList(NostrWsClient).init(allocator);
@@ -1071,35 +1189,22 @@ pub const InteractiveClient = struct {
     }
     
     fn loadBlockedUsers(self: *Self) !void {
-        // Get home directory
-        const home = std.process.getEnvVarOwned(self.allocator, "HOME") catch return error.NoHomeDir;
-        defer self.allocator.free(home);
-        
-        // Build path to blocked users file
-        var path_buf: [1024]u8 = undefined;
-        const config_dir = try std.fmt.bufPrint(&path_buf, "{s}/.zigchat", .{home});
-        
-        // Create directory if it doesn't exist
-        std.fs.makeDirAbsolute(config_dir) catch |err| switch (err) {
-            error.PathAlreadyExists => {},
-            else => return err,
-        };
-        
-        var file_path_buf: [1024]u8 = undefined;
-        const file_path = try std.fmt.bufPrint(&file_path_buf, "{s}/blocked_users.txt", .{config_dir});
-        
-        // Try to open the file
+        var store = AccountStore.init(self.allocator);
+        const base = store.getConfigRoot() catch return; // skip if no env
+        defer self.allocator.free(base);
+
+        const file_path = try std.fs.path.join(self.allocator, &[_][]const u8{ base, "blocked_users.txt" });
+        defer self.allocator.free(file_path);
+
         const file = std.fs.openFileAbsolute(file_path, .{}) catch |err| switch (err) {
-            error.FileNotFound => return, // No blocked users yet
+            error.FileNotFound => return,
             else => return err,
         };
         defer file.close();
-        
-        // Read the file
+
         const content = try file.readToEndAlloc(self.allocator, 1024 * 1024);
         defer self.allocator.free(content);
-        
-        // Parse each line as a pubkey
+
         var lines = std.mem.tokenizeAny(u8, content, "\n\r");
         while (lines.next()) |line| {
             const trimmed = std.mem.trim(u8, line, " \t");
@@ -1108,38 +1213,31 @@ pub const InteractiveClient = struct {
                 try self.blocked_users.put(pubkey_copy, {});
             }
         }
-        
+
         if (self.debug_mode and self.blocked_users.count() > 0) {
             std.debug.print("Loaded {} blocked users\n", .{self.blocked_users.count()});
         }
     }
     
     fn saveBlockedUsers(self: *Self) !void {
-        // Get home directory
-        const home = std.process.getEnvVarOwned(self.allocator, "HOME") catch return error.NoHomeDir;
-        defer self.allocator.free(home);
-        
-        // Build path to blocked users file
-        var path_buf: [1024]u8 = undefined;
-        const config_dir = try std.fmt.bufPrint(&path_buf, "{s}/.zigchat", .{home});
-        
-        // Create directory if it doesn't exist
-        std.fs.makeDirAbsolute(config_dir) catch |err| switch (err) {
+        var store = AccountStore.init(self.allocator);
+        const base = store.getConfigRoot() catch return; // skip if no env
+        defer self.allocator.free(base);
+
+        std.fs.makeDirAbsolute(base) catch |err| switch (err) {
             error.PathAlreadyExists => {},
             else => return err,
         };
-        
-        var file_path_buf: [1024]u8 = undefined;
-        const file_path = try std.fmt.bufPrint(&file_path_buf, "{s}/blocked_users.txt", .{config_dir});
-        
-        // Create/overwrite the file
+
+        const file_path = try std.fs.path.join(self.allocator, &[_][]const u8{ base, "blocked_users.txt" });
+        defer self.allocator.free(file_path);
+
         const file = try std.fs.createFileAbsolute(file_path, .{});
         defer file.close();
-        
-        // Write each blocked pubkey on a new line
+
         self.blocked_mutex.lock();
         defer self.blocked_mutex.unlock();
-        
+
         var iter = self.blocked_users.iterator();
         while (iter.next()) |entry| {
             const pubkey = entry.key_ptr.*;
