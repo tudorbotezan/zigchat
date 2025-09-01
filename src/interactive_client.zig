@@ -4,7 +4,6 @@ const nostr_crypto = @import("nostr_crypto.zig");
 const MessageQueue = @import("message_queue.zig").MessageQueue;
 const builtin = @import("builtin");
 const os = std.os;
-
 pub const InteractiveClient = struct {
     allocator: std.mem.Allocator,
     relays: std.ArrayList(NostrWsClient),
@@ -26,7 +25,10 @@ pub const InteractiveClient = struct {
     blocked_names_mutex: std.Thread.Mutex,
     input_buffer: std.ArrayList(u8), // Buffer to store current user input
     input_mutex: std.Thread.Mutex, // Mutex to protect input buffer
-    original_termios: ?std.posix.termios = null, // Store original terminal settings
+    // Store original terminal settings for POSIX; on Windows we skip raw mode
+    original_termios: ?std.posix.termios = null,
+    // Windows console mode backup (only used on Windows builds)
+    original_console_mode: ?u32 = null,
     
     const Self = @This();
 
@@ -585,41 +587,53 @@ pub const InteractiveClient = struct {
     }
 
     fn enableRawMode(self: *Self) !void {
-        const stdin = std.io.getStdIn();
-        
-        // Get current terminal settings
-        var termios = try std.posix.tcgetattr(stdin.handle);
-        
-        // Save original settings
-        self.original_termios = termios;
-        
-        // Modify flags for raw mode
-        // Disable canonical mode (line buffering) and echo
-        termios.lflag.ICANON = false;
-        termios.lflag.ECHO = false;
-        termios.lflag.ECHONL = false;
-        termios.lflag.ISIG = false; // Disable Ctrl-C, Ctrl-Z signals
-        termios.lflag.IEXTEN = false;
-        
-        // Disable input processing
-        termios.iflag.IXON = false; // Disable Ctrl-S, Ctrl-Q
-        termios.iflag.ICRNL = false; // Don't translate CR to NL
-        termios.iflag.BRKINT = false;
-        termios.iflag.INPCK = false;
-        termios.iflag.ISTRIP = false;
-        
-        // Set minimum characters and timeout
-        termios.cc[@intFromEnum(std.posix.V.TIME)] = 0; // No timeout
-        termios.cc[@intFromEnum(std.posix.V.MIN)] = 1; // Read 1 character at a time
-        
-        // Apply the new settings
-        try std.posix.tcsetattr(stdin.handle, .FLUSH, termios);
+        if (builtin.os.tag == .windows) {
+            // Windows: skip configuring raw mode to avoid console API differences.
+            // Keep behavior line-buffered; interactive features degrade gracefully.
+            self.original_console_mode = null;
+            return;
+        } else {
+            const stdin = std.io.getStdIn();
+            
+            // Get current terminal settings
+            var termios = try std.posix.tcgetattr(stdin.handle);
+            
+            // Save original settings
+            self.original_termios = termios;
+            
+            // Modify flags for raw mode
+            // Disable canonical mode (line buffering) and echo
+            termios.lflag.ICANON = false;
+            termios.lflag.ECHO = false;
+            termios.lflag.ECHONL = false;
+            termios.lflag.ISIG = false; // Disable Ctrl-C, Ctrl-Z signals
+            termios.lflag.IEXTEN = false;
+            
+            // Disable input processing
+            termios.iflag.IXON = false; // Disable Ctrl-S, Ctrl-Q
+            termios.iflag.ICRNL = false; // Don't translate CR to NL
+            termios.iflag.BRKINT = false;
+            termios.iflag.INPCK = false;
+            termios.iflag.ISTRIP = false;
+            
+            // Set minimum characters and timeout
+            termios.cc[@intFromEnum(std.posix.V.TIME)] = 0; // No timeout
+            termios.cc[@intFromEnum(std.posix.V.MIN)] = 1; // Read 1 character at a time
+            
+            // Apply the new settings
+            try std.posix.tcsetattr(stdin.handle, .FLUSH, termios);
+        }
     }
     
     fn disableRawMode(self: *Self) void {
-        if (self.original_termios) |termios| {
-            const stdin = std.io.getStdIn();
-            std.posix.tcsetattr(stdin.handle, .FLUSH, termios) catch {};
+        if (builtin.os.tag == .windows) {
+            // Nothing to restore for Windows in current implementation
+            return;
+        } else {
+            if (self.original_termios) |termios| {
+                const stdin = std.io.getStdIn();
+                std.posix.tcsetattr(stdin.handle, .FLUSH, termios) catch {};
+            }
         }
     }
     
