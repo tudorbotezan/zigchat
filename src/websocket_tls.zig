@@ -138,9 +138,18 @@ pub const TlsWebSocketClient = struct {
         std.debug.print("TLS WebSocket connected!\n", .{});
         
         // Now set socket to non-blocking mode after handshake is complete
-        const sock_flags = try std.posix.fcntl(self.tcp_stream.?.handle, std.posix.F.GETFL, 0);
-        const nonblock_flag = if (@hasDecl(std.posix.O, "NONBLOCK")) std.posix.O.NONBLOCK else 0x0004; // O_NONBLOCK on macOS
-        _ = try std.posix.fcntl(self.tcp_stream.?.handle, std.posix.F.SETFL, sock_flags | nonblock_flag);
+        const builtin = @import("builtin");
+        if (builtin.os.tag == .windows) {
+            // Windows: use ioctlsocket with FIONBIO
+            const ws2_32 = std.os.windows.ws2_32;
+            var nonblocking: u32 = 1;
+            _ = ws2_32.ioctlsocket(@intCast(self.tcp_stream.?.handle), ws2_32.FIONBIO, &nonblocking);
+        } else {
+            // Unix-like systems: use fcntl
+            const sock_flags = try std.posix.fcntl(self.tcp_stream.?.handle, std.posix.F.GETFL, 0);
+            const nonblock_flag = if (@hasDecl(std.posix.O, "NONBLOCK")) std.posix.O.NONBLOCK else 0x0004; // O_NONBLOCK on macOS
+            _ = try std.posix.fcntl(self.tcp_stream.?.handle, std.posix.F.SETFL, sock_flags | nonblock_flag);
+        }
     }
 
     pub fn sendText(self: *Self, text: []const u8) !void {

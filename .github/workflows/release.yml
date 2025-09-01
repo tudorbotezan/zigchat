@@ -42,13 +42,13 @@ jobs:
             git clone --depth 1 https://github.com/microsoft/vcpkg C:/vcpkg
             C:/vcpkg/bootstrap-vcpkg.bat
           fi
-          C:/vcpkg/vcpkg install secp256k1:x64-windows
-          echo "C:/vcpkg/installed/x64-windows/include" >> $GITHUB_PATH
-          echo "C:/vcpkg/installed/x64-windows/lib" >> $GITHUB_PATH
+          C:/vcpkg/vcpkg install secp256k1:x64-windows-static
+          echo "C:/vcpkg/installed/x64-windows-static/include" >> $GITHUB_PATH
+          echo "C:/vcpkg/installed/x64-windows-static/lib" >> $GITHUB_PATH
 
       - name: Build (ReleaseSafe - Windows)
         if: startsWith(matrix.os, 'windows')
-        run: zig build -Doptimize=ReleaseSafe -Dsecp256k1_include="C:/vcpkg/installed/x64-windows/include" -Dsecp256k1_lib="C:/vcpkg/installed/x64-windows/lib"
+        run: zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-windows-gnu -Dsecp256k1_include="C:/vcpkg/installed/x64-windows-static/include" -Dsecp256k1_lib="C:/vcpkg/installed/x64-windows-static/lib"
         
       - name: Build (ReleaseSafe - Unix)
         if: "!startsWith(matrix.os, 'windows')"
