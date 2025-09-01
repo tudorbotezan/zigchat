@@ -8,6 +8,7 @@ A lightweight terminal-based Nostr client written in Zig. Connect to geohash-bas
 - 🌍 **Geohash Channels**: Location-based chat rooms (e.g., "9q" for Central California)
 - 💬 **Real-time Messaging**: WebSocket connections to Nostr relays
 - 🔐 **Cryptographically Secure**: secp256k1 signatures for all messages
+- 🚫 **Advanced Blocking**: Block users by pubkey, name, or wildcard patterns
 - 🖥️ **Cross-platform**: macOS, Linux, Windows support
 
 ## Quick Start
@@ -31,25 +32,10 @@ tar -xzf zigchat-*.tar.gz
 
 ### Build from Source
 
-```bash
-# Build
-zig build
+#### Prerequisites
 
-# Connect to Central California channel
-./connect.sh
-
-# Or specify custom channel and relay
-./connect.sh 9q wss://relay.damus.io
-```
-
-## Installation
-
-### Prerequisites
-
-- Zig 0.13.0 or later
+- Zig 0.14.0 or later
 - libsecp256k1 (with Schnorr support)
-
-### Install secp256k1
 
 **macOS:**
 ```bash
@@ -63,29 +49,28 @@ sudo yum install libsecp256k1-devel    # RHEL/Fedora
 ```
 
 **Windows:**
-Download and install from [bitcoin-core/secp256k1](https://github.com/bitcoin-core/secp256k1)
-
-### Build from Source
+Use vcpkg or download from [bitcoin-core/secp256k1](https://github.com/bitcoin-core/secp256k1)
 
 ```bash
 git clone https://github.com/tudorbotezan/zigchat.git
 cd zigchat
 zig build -Doptimize=ReleaseSafe
+
+# Run locally with helper script
+./connect.sh 9q
 ```
 
 ## Usage
 
 ```bash
-# Connect to Central California channel (default)
-./connect.sh
+# Using pre-built binary
+./zigchat chat 9q           # Connect to geohash 9q
+./zigchat chat 9q --debug   # With debug mode
 
-# Connect to a different geohash channel
-./connect.sh 9q8              # San Francisco Bay Area
-./connect.sh 9q5              # Los Angeles Area
-./connect.sh dr5              # New York City
-
-# Connect to a specific relay
-./connect.sh 9q wss://nos.lol
+# Using helper script (for development)
+./connect.sh 9q8            # San Francisco Bay Area
+./connect.sh 9q5            # Los Angeles Area
+./connect.sh dr5            # New York City
 ```
 
 ### Chat Commands
@@ -93,10 +78,21 @@ zig build -Doptimize=ReleaseSafe
 Once connected:
 - Type any message and press Enter to send
 - `/users` - Show active users in the channel
-- `/block <id>` or `/b <id>` - Block a user (by pubkey, #tag, or username#tag)
-- `/unblock <id>` - Unblock a user
-- `/blocks` - List all blocked users
 - `/quit` - Exit the chat
+
+#### Blocking Features
+- `/block <id>` or `/b <id>` - Block by pubkey, #tag, or username#tag
+- `/blockname <pattern>` - Block usernames with wildcard support (e.g., `spam*`, `*bot`, `test*123`)
+- `/unblock <id>` - Unblock a user by pubkey
+- `/unblockname <pattern>` - Unblock a name pattern
+- `/blocks` - List all blocked users
+- `/blockednames` - List all blocked name patterns
+
+**Wildcard Examples:**
+- `spam*` - Blocks any username starting with "spam"
+- `*bot` - Blocks any username ending with "bot"
+- `test*user` - Blocks usernames starting with "test" and ending with "user"
+- `annoying` - Blocks exact username match
 
 ## Geohash Channels
 
@@ -111,42 +107,7 @@ Zigchat uses geohash prefixes for location-based channels:
 
 Shorter prefixes cover larger areas. Find your geohash at [geohash.org](http://geohash.org/).
 
-## Cross-Compilation
 
-Build for different platforms:
-
-```bash
-# Linux
-zig build -Dtarget=x86_64-linux -Doptimize=ReleaseSafe
-
-# Windows  
-zig build -Dtarget=x86_64-windows -Doptimize=ReleaseSafe
-
-# macOS
-zig build -Dtarget=x86_64-macos -Doptimize=ReleaseSafe
-
-# ARM64 (Raspberry Pi)
-zig build -Dtarget=aarch64-linux -Doptimize=ReleaseSafe
-```
-
-## Project Structure
-
-```
-zigchat/
-├── src/
-│   ├── main.zig                 # CLI entry point
-│   ├── interactive_client.zig   # Chat UI and message handling
-│   ├── nostr_ws_client.zig     # Nostr protocol over WebSocket
-│   ├── websocket_client.zig    # WebSocket implementation
-│   ├── websocket_tls.zig       # TLS/WSS support
-│   ├── nostr_crypto.zig        # Cryptographic operations
-│   └── message_queue.zig       # Message buffering
-├── lib/ws/                     # WebSocket library
-├── assets/
-│   ├── default-relays.txt      # Fallback relay list
-│   └── geohash-relays.json     # Regional relay mapping
-└── connect.sh                  # Quick connect script
-```
 
 ## Contributing
 
