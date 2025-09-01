@@ -905,7 +905,35 @@ pub const InteractiveClient = struct {
             } else if (char == 127 or char == 8) { // Backspace (DEL or BS)
                 self.input_mutex.lock();
                 if (self.input_buffer.items.len > 0) {
-                    _ = self.input_buffer.pop();
+                    // Remove the last UTF-8 codepoint (may be multiple bytes)
+                    var to_remove: usize = 1;
+                    // Walk back over continuation bytes 10xxxxxx until we hit a leading byte
+                    var idx: isize = @as(isize, @intCast(self.input_buffer.items.len)) - 1;
+                    // If last byte is a continuation byte, include preceding continuation bytes
+                    var count: usize = 0;
+                    while (idx >= 0 and (self.input_buffer.items[@intCast(usize, idx)] & 0b1100_0000) == 0b1000_0000 and count < 4) : ({ idx -= 1; count += 1; }) {}
+                    if (idx >= 0) {
+                        const b = self.input_buffer.items[@intCast(usize, idx)];
+                        // Determine expected sequence length from leading byte
+                        if ((b & 0b1000_0000) == 0) {
+                            to_remove = 1; // ASCII
+                        } else if ((b & 0b1110_0000) == 0b1100_0000) {
+                            to_remove = @min(self.input_buffer.items.len, (@intCast(usize, (self.input_buffer.items.len - @intCast(usize, idx)))));
+                            to_remove = @min(to_remove, 2);
+                        } else if ((b & 0b1111_0000) == 0b1110_0000) {
+                            to_remove = @min(self.input_buffer.items.len, (@intCast(usize, (self.input_buffer.items.len - @intCast(usize, idx)))));
+                            to_remove = @min(to_remove, 3);
+                        } else if ((b & 0b1111_1000) == 0b1111_0000) {
+                            to_remove = @min(self.input_buffer.items.len, (@intCast(usize, (self.input_buffer.items.len - @intCast(usize, idx)))));
+                            to_remove = @min(to_remove, 4);
+                        } else {
+                            to_remove = 1; // Fallback
+                        }
+                    }
+                    var r: usize = 0;
+                    while (r < to_remove and self.input_buffer.items.len > 0) : (r += 1) {
+                        _ = self.input_buffer.pop();
+                    }
                     // Clear line and redraw with updated buffer
                     try stdout.print("\r\x1b[2K> {s}", .{self.input_buffer.items});
                     std.io.getStdOut().sync() catch {};
@@ -919,11 +947,12 @@ pub const InteractiveClient = struct {
                     try stdout.print("\n", .{});
                     break;
                 }
-            } else if (char >= 32 and char < 127) { // Printable characters
+            } else if (char >= 32) { // Accept printable ASCII and UTF-8 bytes
+                // Accept and echo any non-control byte, including UTF-8 (>=128)
                 self.input_mutex.lock();
                 self.input_buffer.append(char) catch {};
                 self.input_mutex.unlock();
-                // Echo the character and flush immediately
+                // Echo the byte and flush immediately
                 try stdout.writeByte(char);
                 std.io.getStdOut().sync() catch {};
             } else if (char == 27) { // ESC sequence (arrow keys, etc.)
