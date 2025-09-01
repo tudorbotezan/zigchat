@@ -42,7 +42,7 @@ jobs:
             git clone --depth 1 https://github.com/microsoft/vcpkg C:/vcpkg
             C:/vcpkg/bootstrap-vcpkg.bat
           fi
-          C:/vcpkg/vcpkg install secp256k1:x64-windows-static
+          C:/vcpkg/vcpkg install secp256k1[ecmult-static-precomputation]:x64-windows-static
           echo "C:/vcpkg/installed/x64-windows-static/include" >> $GITHUB_PATH
           echo "C:/vcpkg/installed/x64-windows-static/lib" >> $GITHUB_PATH
 
