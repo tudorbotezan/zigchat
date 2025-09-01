@@ -12,6 +12,25 @@ A lightweight terminal-based Nostr client written in Zig. Connect to geohash-bas
 
 ## Quick Start
 
+### Download Pre-built Binary
+
+1. Download the latest release from [GitHub releases](https://github.com/tudorbotezan/zigchat/releases)
+   - Linux: `zigchat-Linux.tar.gz`
+   - macOS: `zigchat-macOS.tar.gz`  
+   - Windows: `zigchat-Windows.zip`
+
+2. Extract and run:
+```bash
+# Extract (Linux/macOS)
+tar -xzf zigchat-*.tar.gz
+
+# Run
+./zigchat chat 9q           # Connect to geohash 9q
+./zigchat chat 9q --debug   # With debug mode
+```
+
+### Build from Source
+
 ```bash
 # Build
 zig build

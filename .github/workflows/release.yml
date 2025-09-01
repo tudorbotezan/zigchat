@@ -64,10 +64,14 @@ jobs:
             tar -czf ../../zigchat-${{ runner.os }}.tar.gz *
           fi
 
-      - name: Attach to GitHub Release
+      - name: Attach to GitHub Release (Windows)
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && startsWith(matrix.os, 'windows')
         with:
-          files: |
-            zigchat-${{ runner.os }}.zip
-            zigchat-${{ runner.os }}.tar.gz
+          files: zigchat-${{ runner.os }}.zip
+            
+      - name: Attach to GitHub Release (Unix)
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') && !startsWith(matrix.os, 'windows')
+        with:
+          files: zigchat-${{ runner.os }}.tar.gz
