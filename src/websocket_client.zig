@@ -67,7 +67,7 @@ pub const WebSocketClient = struct {
             // Windows: use ioctlsocket with FIONBIO
             const ws2_32 = std.os.windows.ws2_32;
             var nonblocking: u32 = 1;
-            _ = ws2_32.ioctlsocket(@intCast(self.tcp_client.?.handle), ws2_32.FIONBIO, &nonblocking);
+            _ = ws2_32.ioctlsocket(@ptrCast(self.tcp_client.?.handle), ws2_32.FIONBIO, &nonblocking);
         } else {
             // Unix-like systems: use fcntl
             const sock_flags = try std.posix.fcntl(self.tcp_client.?.handle, std.posix.F.GETFL, 0);

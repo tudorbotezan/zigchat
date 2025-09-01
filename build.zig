@@ -33,7 +33,13 @@ pub fn build(b: *std.Build) void {
         exe.addLibraryPath(.{ .cwd_relative = lib });
     }
     
-    exe.linkSystemLibrary("secp256k1");
+    // On Windows, we need to link additional libraries for secp256k1
+    if (target.result.os.tag == .windows) {
+        exe.linkSystemLibrary("secp256k1");
+        exe.linkSystemLibrary("secp256k1_precomputed");
+    } else {
+        exe.linkSystemLibrary("secp256k1");
+    }
 
     b.installArtifact(exe);
 
@@ -66,7 +72,13 @@ pub fn build(b: *std.Build) void {
         test_exe.addLibraryPath(.{ .cwd_relative = lib });
     }
     
-    test_exe.linkSystemLibrary("secp256k1");
+    // On Windows, we need to link additional libraries for secp256k1
+    if (target.result.os.tag == .windows) {
+        test_exe.linkSystemLibrary("secp256k1");
+        test_exe.linkSystemLibrary("secp256k1_precomputed");
+    } else {
+        test_exe.linkSystemLibrary("secp256k1");
+    }
 
     b.installArtifact(test_exe);
 
@@ -92,7 +104,13 @@ pub fn build(b: *std.Build) void {
         exe_unit_tests.addLibraryPath(.{ .cwd_relative = lib });
     }
     
-    exe_unit_tests.linkSystemLibrary("secp256k1");
+    // On Windows, we need to link additional libraries for secp256k1
+    if (target.result.os.tag == .windows) {
+        exe_unit_tests.linkSystemLibrary("secp256k1");
+        exe_unit_tests.linkSystemLibrary("secp256k1_precomputed");
+    } else {
+        exe_unit_tests.linkSystemLibrary("secp256k1");
+    }
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 
