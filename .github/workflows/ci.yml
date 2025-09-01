@@ -48,7 +48,7 @@ jobs:
 
       - name: Build (ReleaseSafe - Windows)
         if: startsWith(matrix.os, 'windows')
-        run: zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-windows-gnu -Dsecp256k1_include="C:/vcpkg/installed/x64-windows-static/include" -Dsecp256k1_lib="C:/vcpkg/installed/x64-windows-static/lib"
+        run: zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-windows-msvc -Dsecp256k1_include="C:/vcpkg/installed/x64-windows-static/include" -Dsecp256k1_lib="C:/vcpkg/installed/x64-windows-static/lib"
         
       - name: Build (ReleaseSafe - Unix)
         if: "!startsWith(matrix.os, 'windows')"
