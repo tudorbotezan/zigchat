@@ -1,0 +1,14 @@
+{
+    "servers": [{"agent": "ws_server.zig", "url": "ws://localhost:9002", "options": {"version": 18}}],
+    "outdir": "./reports/servers",
+    "cases": [
+        "*"
+    ],
+    "exclude-cases": [
+        "6.4.*",
+        "9.*",
+        "12.*",
+        "13.*"
+    ],
+    "exclude-agent-cases": {}
+}
